@@ -5,10 +5,11 @@
   "main": "src/agent-manager.js",
   "scripts": {
     "validate-all": "for file in agents/prompts/*.md; do node scripts/validate-prompt.js \"$file\"; done",
-    "test-all": "for agent in selector assessor marketAnalyst; do node scripts/test-agent.js \"$agent\"; done",
+    "test-all": "for agent in selector assessor marketAnalyst orchestrator; do node scripts/test-agent.js \"$agent\"; done",
+    "analyze": "node scripts/run-orchestrator.js",
     "update-agent": "node scripts/update-agent.js"
   },
-  "keywords": ["agents", "claude", "automation"],
+  "keywords": ["agents", "claude", "automation", "auction"],
   "author": "Mikita",
   "license": "MIT",
   "dependencies": {

@@ -1,8 +1,17 @@
 {
+  "orchestrator": {
+    "name": "Главный оркестратор",
+    "promptFile": "prompts/orchestrator.md",
+    "version": "1.0",
+    "active": true,
+    "role": "coordinator",
+    "lastUpdated": "2024-01-15T10:30:00Z",
+    "updatedBy": "mikita"
+  },
   "selector": {
     "name": "Агент подбора",
     "promptFile": "prompts/selector.md",
-    "version": "1.0",
+    "version": "1.1",
     "active": true,
     "lastUpdated": "2024-01-15T10:30:00Z",
     "updatedBy": "mikita"
