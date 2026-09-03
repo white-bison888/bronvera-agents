@@ -1,0 +1,17 @@
+{
+  "name": "bronvera-agents",
+  "version": "1.0.0",
+  "description": "Multi-agent system for automotive auction analysis",
+  "main": "src/agent-manager.js",
+  "scripts": {
+    "validate-all": "for file in agents/prompts/*.md; do node scripts/validate-prompt.js \"$file\"; done",
+    "test-all": "for agent in selector assessor marketAnalyst; do node scripts/test-agent.js \"$agent\"; done",
+    "update-agent": "node scripts/update-agent.js"
+  },
+  "keywords": ["agents", "claude", "automation"],
+  "author": "Mikita",
+  "license": "MIT",
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.16.0"
+  }
+}

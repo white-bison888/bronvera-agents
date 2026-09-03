@@ -1,0 +1,26 @@
+{
+  "selector": {
+    "name": "Агент подбора",
+    "promptFile": "prompts/selector.md",
+    "version": "1.0",
+    "active": true,
+    "lastUpdated": "2024-01-15T10:30:00Z",
+    "updatedBy": "mikita"
+  },
+  "assessor": {
+    "name": "Агент оценки ремонта",
+    "promptFile": "prompts/assessor.md",
+    "version": "1.0",
+    "active": true,
+    "lastUpdated": "2024-01-14T15:45:00Z",
+    "updatedBy": "mikita"
+  },
+  "marketAnalyst": {
+    "name": "Аналитик рынка",
+    "promptFile": "prompts/market-analyst.md",
+    "version": "1.0",
+    "active": true,
+    "lastUpdated": "2024-01-10T09:20:00Z",
+    "updatedBy": "mikita"
+  }
+}
