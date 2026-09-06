@@ -2792,6 +2792,21 @@ class BidCarsProvider {
         value
       );
 
+    // Значение может прийти уже приведённым — так его передаёт фильтр
+    // поиска. Без этой проверки "run_and_drive" превращался в "other",
+    // и фильтр не совпадал ни с одной машиной.
+    if (
+      [
+        "run_and_drive",
+        "starts",
+        "stationary",
+        "unknown",
+        "other",
+      ].includes(v)
+    ) {
+      return v;
+    }
+
     if (
       v.includes(
         "run and drive"
