@@ -126,25 +126,35 @@ class LotPhotoCollector {
 
     const files = [];
 
-    for (const [index, image] of images.slice(0, limit).entries()) {
-      const file = path.join(lotDir, `shot-${index + 1}.jpg`);
-
-      if (fs.existsSync(file)) {
-        files.push(file);
-        continue;
-      }
+    /*
+     * На странице десятки изображений, но большинство — миниатюры
+     * галереи и превью похожих лотов. Брать первые попавшиеся нельзя:
+     * нужны крупные кадры самого автомобиля, поэтому сначала отбираем
+     * подходящие по размеру и только потом снимаем.
+     */
+    for (const image of images) {
+      if (files.length >= limit)
+        break;
 
       try {
+        await image.scrollIntoViewIfNeeded({ timeout: 5000 });
+
         const box = await image.boundingBox();
 
-        // Иконки и невидимые превью для оценки бесполезны.
         if (!box || box.width < 300 || box.height < 200)
           continue;
+
+        const file = path.join(lotDir, `shot-${files.length + 1}.jpg`);
+
+        if (fs.existsSync(file)) {
+          files.push(file);
+          continue;
+        }
 
         await image.screenshot({ path: file, type: "jpeg", quality: 85 });
         files.push(file);
       } catch {
-        // Элемент мог уехать за пределы экрана — пропускаем.
+        // Элемент мог не отрисоваться — пропускаем и берём следующий.
       }
     }
 
@@ -233,6 +243,10 @@ class LotPhotoCollector {
       extraHTTPHeaders: {
         "Accept-Language": "pl-PL,pl;q=0.9,en;q=0.8",
       },
+
+      // Резидентный прокси подменяет сертификаты — без этого
+      // браузер обрывает соединение на проверке подлинности.
+      ignoreHTTPSErrors: Boolean(proxy),
     });
 
     // Признак автоматизации, по которому защита узнаёт робота.
@@ -264,13 +278,18 @@ class LotPhotoCollector {
 
     try {
       // Прогрев: заходим как обычный посетитель, с главной.
-      // Переход сразу на карточку лота выглядит подозрительно.
-      await page.goto("https://bid.cars/pl/", {
-        waitUntil: "domcontentloaded",
-        timeout: 45000,
-      });
+      // Через резидентный прокси страница грузится медленно, поэтому
+      // неудача прогрева не должна ронять весь сбор.
+      try {
+        await page.goto("https://bid.cars/pl/", {
+          waitUntil: "domcontentloaded",
+          timeout: 90000,
+        });
 
-      await page.waitForTimeout(2000);
+        await page.waitForTimeout(2000);
+      } catch {
+        console.log("   прогрев не удался, идём сразу к лоту");
+      }
 
       for (const lot of missing) {
         const key = String(lot.lotNumber);
@@ -280,7 +299,7 @@ class LotPhotoCollector {
         try {
           const response = await page.goto(lot.url, {
             waitUntil: "domcontentloaded",
-            timeout: 45000,
+            timeout: 90000,
           });
 
           if (!response || !response.ok()) {
@@ -297,7 +316,7 @@ class LotPhotoCollector {
 
           // Галерея подгружается по мере прокрутки.
           await page.mouse.wheel(0, 2500);
-          await page.waitForTimeout(2500);
+          await page.waitForTimeout(5000);
 
           const urls = this.extractPhotoUrls(await page.content());
 
