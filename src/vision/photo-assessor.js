@@ -193,46 +193,50 @@ class PhotoAssessor {
       throw new Error("ANTHROPIC_API_KEY не задан");
 
     const cache = this.loadCache();
-    const results = [];
     let fromCache = 0;
     let analyzed = 0;
 
-    for (const lot of lots) {
-      const key = String(lot.lotNumber);
+    // Лоты разбираем параллельно: запросы идут к разным изображениям
+    // и друг друга не ждут, а последовательный разбор пяти машин
+    // не укладывался в тайм-аут вызывающего узла.
+    const results = await Promise.all(
+      lots.map(async (lot) => {
+        const key = String(lot.lotNumber);
 
-      if (cache[key]) {
-        results.push(cache[key].assessment);
-        fromCache += 1;
-        continue;
-      }
+        if (cache[key]) {
+          fromCache += 1;
 
-      try {
-        const assessment = await this.assessOne(
-          lot,
-          photosByLot[key] || []
-        );
-
-        results.push(assessment);
-
-        // Отсутствие фотографий не кэшируем: снимки могут появиться позже.
-        if (assessment.available) {
-          cache[key] = {
-            assessment,
-            assessedAt: new Date().toISOString(),
-          };
-
-          analyzed += 1;
+          return cache[key].assessment;
         }
-      } catch (error) {
-        console.error(`   ${key}: ошибка оценки — ${error.message}`);
 
-        results.push({
-          lotNumber: lot.lotNumber,
-          available: false,
-          reason: `Ошибка оценки: ${error.message}`,
-        });
-      }
-    }
+        try {
+          const assessment = await this.assessOne(
+            lot,
+            photosByLot[key] || []
+          );
+
+          // Отсутствие фотографий не кэшируем: снимки могут появиться позже.
+          if (assessment.available) {
+            cache[key] = {
+              assessment,
+              assessedAt: new Date().toISOString(),
+            };
+
+            analyzed += 1;
+          }
+
+          return assessment;
+        } catch (error) {
+          console.error(`   ${key}: ошибка оценки — ${error.message}`);
+
+          return {
+            lotNumber: lot.lotNumber,
+            available: false,
+            reason: `Ошибка оценки: ${error.message}`,
+          };
+        }
+      })
+    );
 
     if (analyzed > 0)
       this.saveCache(cache);

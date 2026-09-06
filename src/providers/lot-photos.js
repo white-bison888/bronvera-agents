@@ -24,7 +24,7 @@ class LotPhotoCollector {
     this.maxPhotosPerLot = options.maxPhotosPerLot || 6;
 
     // Пауза между лотами, чтобы не выглядеть роботом.
-    this.delayMs = options.delayMs || 1500;
+    this.delayMs = options.delayMs || 800;
   }
 
   loadCache() {
@@ -60,30 +60,38 @@ class LotPhotoCollector {
 
     fs.mkdirSync(lotDir, { recursive: true });
 
-    const files = [];
-
-    for (const [index, url] of urls.entries()) {
+    // Снимки одного лота качаем разом: последовательная загрузка
+    // пяти лотов не укладывалась в тайм-аут вызывающего узла.
+    const downloads = urls.map(async (url, index) => {
       const file = path.join(lotDir, `${index + 1}.jpg`);
 
-      if (fs.existsSync(file)) {
-        files.push(file);
-        continue;
-      }
+      if (fs.existsSync(file))
+        return file;
 
       // Запрос идёт из контекста браузера, где уже стоят куки Cloudflare,
       // полученные при открытии страницы лота.
-      const response = await context.request.get(url, {
-        headers: { referer: "https://bid.cars/" },
-      });
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        try {
+          const response = await context.request.get(url, {
+            headers: { referer: "https://bid.cars/" },
+            timeout: 20000,
+          });
 
-      if (!response.ok())
-        continue;
+          if (!response.ok())
+            continue;
 
-      fs.writeFileSync(file, await response.body());
-      files.push(file);
-    }
+          fs.writeFileSync(file, await response.body());
 
-    return files;
+          return file;
+        } catch {
+          // Вторая попытка: одиночные отказы Cloudflare не редкость.
+        }
+      }
+
+      return null;
+    });
+
+    return (await Promise.all(downloads)).filter(Boolean);
   }
 
   async collect(lots = []) {
@@ -160,6 +168,10 @@ class LotPhotoCollector {
             sourceUrls: urls,
             fetchedAt: new Date().toISOString(),
           };
+
+          // Пишем сразу: если вызывающая сторона отвалится по тайм-ауту,
+          // уже скачанные лоты не придётся собирать заново.
+          this.saveCache(cache);
 
           console.log(
             `   ${key}: найдено ${urls.length}, сохранено ${files.length}`
