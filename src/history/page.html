@@ -7,127 +7,205 @@
 <style>
   :root { color-scheme: light; }
   body {
-    margin: 0; padding: 32px;
+    margin: 0; padding: 32px 24px;
     font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     background: #f7f7f8; color: #18181b;
   }
-  .wrap { max-width: 1100px; margin: 0 auto; }
+  .wrap { max-width: 1180px; margin: 0 auto; }
   h1 { font-size: 24px; margin: 0 0 4px; letter-spacing: -0.02em; }
   .sub { color: #71717a; margin-bottom: 24px; }
-  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; margin-bottom: 24px; }
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-bottom: 24px; }
   .card { background: #fff; border: 1px solid #e4e4e7; border-radius: 12px; padding: 14px 16px; }
   .card .label { font-size: 12px; color: #71717a; }
   .card .value { font-size: 22px; font-weight: 600; margin-top: 2px; }
-  table { width: 100%; border-collapse: collapse; background: #fff;
-          border: 1px solid #e4e4e7; border-radius: 12px; overflow: hidden; }
-  th, td { padding: 10px 12px; text-align: left; border-bottom: 1px solid #f1f1f3; }
-  th { font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; color: #71717a; background: #fafafa; }
-  tr:last-child td { border-bottom: 0; }
-  td.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
-  .tag { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 12px; font-weight: 600; }
+
+  .lot { background: #fff; border: 1px solid #e4e4e7; border-radius: 12px; margin-bottom: 12px; overflow: hidden; }
+  .row { display: grid; grid-template-columns: 1.6fr 90px 1fr 1fr 1fr 1.5fr; gap: 16px; align-items: center; padding: 14px 18px; }
+  @media (max-width: 900px) { .row { grid-template-columns: 1fr 1fr; } }
+  .car { font-weight: 600; }
+  .lotno { font-size: 12px; color: #a1a1aa; }
+  .lotno a { color: #2563eb; text-decoration: none; }
+  .cell .k { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: #a1a1aa; }
+  .cell .v { font-variant-numeric: tabular-nums; }
+  .big { font-size: 17px; font-weight: 600; }
+
+  .tag { display: inline-block; padding: 3px 10px; border-radius: 999px; font-size: 12px; font-weight: 700; }
   .buy { background: #ecfdf5; color: #047857; }
   .watch { background: #fffbeb; color: #b45309; }
   .skip { background: #fef2f2; color: #b91c1c; }
-  .norm { font-size: 11px; color: #b45309; }
-  .miss { color: #047857; font-weight: 600; }
-  .ok { color: #71717a; }
-  input, button { font: inherit; }
-  input { padding: 7px 10px; border: 1px solid #d4d4d8; border-radius: 8px; width: 110px; }
-  button { padding: 7px 14px; border: 0; border-radius: 8px; background: #18181b; color: #fff; cursor: pointer; }
+
+  .src { font-size: 11px; padding: 1px 6px; border-radius: 4px; }
+  .src-photo { background: #eff6ff; color: #1d4ed8; }
+  .src-norm { background: #fff7ed; color: #c2410c; }
+  .src-assessor { background: #f4f4f5; color: #52525b; }
+
+  .changed { font-size: 11px; color: #047857; margin-top: 2px; }
+  .changed.down { color: #b91c1c; }
+
+  details { border-top: 1px solid #f1f1f3; }
+  summary { cursor: pointer; padding: 9px 18px; font-size: 12px; color: #52525b; user-select: none; }
+  summary:hover { background: #fafafa; }
+  .panel { padding: 4px 18px 18px; display: grid; grid-template-columns: 1fr 1fr; gap: 28px; }
+  @media (max-width: 760px) { .panel { grid-template-columns: 1fr; } }
+  .panel h4 { margin: 8px 0; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: #71717a; }
+  .calc { font-size: 13px; }
+  .calc div { display: flex; justify-content: space-between; gap: 12px; padding: 3px 0; }
+  .calc .minus span:last-child { color: #b91c1c; }
+  .calc .total { border-top: 1px solid #e4e4e7; margin-top: 6px; padding-top: 6px; font-weight: 700; }
+  .past { font-size: 13px; color: #52525b; }
+  .past div { padding: 3px 0; display: flex; justify-content: space-between; gap: 12px; }
+
+  input { padding: 6px 9px; border: 1px solid #d4d4d8; border-radius: 8px; width: 92px; font: inherit; }
+  button { padding: 6px 12px; border: 0; border-radius: 8px; background: #18181b; color: #fff; cursor: pointer; font: inherit; }
   button:hover { background: #000; }
-  .empty { padding: 40px; text-align: center; color: #71717a; background: #fff;
-           border: 1px solid #e4e4e7; border-radius: 12px; }
-  a { color: #2563eb; }
+  .verdict { font-weight: 600; }
+  .miss { color: #047857; }
+  .ok { color: #71717a; }
+  .empty { padding: 40px; text-align: center; color: #71717a; background: #fff; border: 1px solid #e4e4e7; border-radius: 12px; }
 </style>
 </head>
 <body>
 <div class="wrap">
   <h1>История рекомендаций</h1>
   <div class="sub">Что BRONVERA советовала и чем закончились торги</div>
-
   <div class="cards" id="cards"></div>
   <div id="content"></div>
 </div>
 
 <script>
 const usd = v => typeof v === 'number' ? '$' + Math.round(v).toLocaleString('en-US') : '—';
+const when = s => new Date(s).toLocaleString('ru-RU', { day:'2-digit', month:'2-digit', hour:'2-digit', minute:'2-digit' });
 
-const decisionTag = d => {
-  if (!d) return '—';
-  const cls = d === 'BUY' ? 'buy' : d === 'WATCH' ? 'watch' : 'skip';
-  return `<span class="tag ${cls}">${d}</span>`;
-};
+const srcLabel = { photo: 'по фото', norm: 'норматив', assessor: 'эксперт' };
+const srcClass = { photo: 'src-photo', norm: 'src-norm', assessor: 'src-assessor' };
+
+const calcRows = [
+  ['resaleValueUsd', 'Ожидаемая цена продажи', false],
+  ['repairCostUsd', 'Ремонт', true],
+  ['auctionFeesUsd', 'Сборы аукциона', true],
+  ['usTransportUsd', 'Транспорт по США', true],
+  ['oceanFreightUsd', 'Морская перевозка', true],
+  ['customsDutyUsd', 'Пошлина ЕС', true],
+  ['vatUsd', 'НДС', true],
+  ['localCostsUsd', 'Расходы на месте', true],
+  ['riskReserveUsd', 'Резерв на риск', true],
+  ['targetProfitUsd', 'Целевая прибыль', true],
+];
+
+const decisionTag = d => d
+  ? `<span class="tag ${d === 'BUY' ? 'buy' : d === 'WATCH' ? 'watch' : 'skip'}">${d}</span>`
+  : '—';
+
+function renderCalc(e) {
+  if (!e.breakdown) return '<div class="past">Раскладка не сохранялась для этой оценки.</div>';
+
+  const rows = calcRows
+    .filter(([k]) => typeof e.breakdown[k] === 'number')
+    .map(([k, label, minus]) =>
+      `<div class="${minus ? 'minus' : ''}"><span>${label}</span><span>${minus ? '−' : ''}${usd(e.breakdown[k])}</span></div>`)
+    .join('');
+
+  const total = e.viable
+    ? `<div class="total"><span>Максимальная ставка</span><span>${usd(e.maxBidUsd)}</span></div>`
+    : `<div class="total"><span>Итог</span><span>не окупается</span></div>`;
+
+  return `<div class="calc">${rows}${total}</div>`;
+}
+
+function renderPast(list) {
+  if (list.length === 0) return '<div class="past">Это первая оценка лота.</div>';
+
+  return '<div class="past">' + list.map(e => {
+    const src = srcLabel[e.repairCostSource] || '—';
+    return `<div><span>${when(e.createdAt)} · ${src}</span><span>ремонт ${usd(e.repairCostUsd)} → ${e.viable ? usd(e.maxBidUsd) : 'не окупается'}</span></div>`;
+  }).join('') + '</div>';
+}
 
 async function load() {
-  const [entriesRes, summaryRes] = await Promise.all([
+  const [hist, summary] = await Promise.all([
     fetch('/api/history').then(r => r.json()),
     fetch('/api/history/summary').then(r => r.json()),
   ]);
 
-  const s = summaryRes;
   document.getElementById('cards').innerHTML = `
-    <div class="card"><div class="label">Лотов отслеживается</div><div class="value">${s.lotsTracked}</div></div>
-    <div class="card"><div class="label">Известна цена торгов</div><div class="value">${s.withActualPrice}</div></div>
-    <div class="card"><div class="label">Среднее отклонение</div><div class="value">${s.averageDeviationPct === null ? '—' : s.averageDeviationPct + '%'}</div></div>
-    <div class="card"><div class="label">Всего записей</div><div class="value">${s.totalEntries}</div></div>`;
+    <div class="card"><div class="label">Лотов отслеживается</div><div class="value">${summary.lotsTracked}</div></div>
+    <div class="card"><div class="label">Известна цена торгов</div><div class="value">${summary.withActualPrice}</div></div>
+    <div class="card"><div class="label">Среднее отклонение</div><div class="value">${summary.averageDeviationPct === null ? '—' : summary.averageDeviationPct + '%'}</div></div>
+    <div class="card"><div class="label">Всего оценок</div><div class="value">${summary.totalEntries}</div></div>`;
 
-  const entries = entriesRes.entries || [];
+  const entries = hist.entries || [];
 
   if (!entries.length) {
     document.getElementById('content').innerHTML =
-      '<div class="empty">Пока пусто. Запусти анализ на сайте — рекомендации появятся здесь.</div>';
+      '<div class="empty">Пока пусто. Запусти анализ — рекомендации появятся здесь.</div>';
     return;
   }
 
-  const rows = entries.map(e => {
-    const sold = e.actual && typeof e.actual.soldPriceUsd === 'number' ? e.actual.soldPriceUsd : null;
-    let verdict = '';
+  // Одна карточка на лот: последняя оценка сверху, прошлые — в раскрытии.
+  const byLot = new Map();
+  for (const e of entries) {
+    const list = byLot.get(e.lotNumber) || [];
+    list.push(e);
+    byLot.set(e.lotNumber, list);
+  }
 
-    if (sold !== null && typeof e.maxBidUsd === 'number') {
-      const gap = e.maxBidUsd - sold;
-      verdict = gap >= 0
-        ? `<span class="miss">можно было брать</span>`
-        : `<span class="ok">ушёл дороже потолка</span>`;
+  const lots = [...byLot.entries()].map(([lot, list]) => {
+    list.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+    return { lot, latest: list[0], past: list.slice(1) };
+  }).sort((a, b) => new Date(b.latest.createdAt) - new Date(a.latest.createdAt));
+
+  document.getElementById('content').innerHTML = lots.map(({ lot, latest: e, past }) => {
+    const title = [e.year, e.make, e.model].filter(Boolean).join(' ') || lot;
+    const link = e.url ? `<a href="${e.url}" target="_blank" rel="noopener">${lot}</a>` : lot;
+
+    const prev = past[0];
+    let changed = '';
+    if (prev && typeof prev.maxBidUsd === 'number' && typeof e.maxBidUsd === 'number' && prev.maxBidUsd !== e.maxBidUsd) {
+      const up = e.maxBidUsd > prev.maxBidUsd;
+      changed = `<div class="changed ${up ? '' : 'down'}">было ${usd(prev.maxBidUsd)} ${up ? '↑' : '↓'}</div>`;
     }
 
-    const title = [e.year, e.make, e.model].filter(Boolean).join(' ') || e.lotNumber;
-    const lotCell = e.url
-      ? `<a href="${e.url}" target="_blank" rel="noopener">${e.lotNumber}</a>`
-      : e.lotNumber;
+    const sold = e.actual && typeof e.actual.soldPriceUsd === 'number' ? e.actual.soldPriceUsd : null;
+    let verdict = '<span class="ok">торги не завершены</span>';
+    if (sold !== null && typeof e.maxBidUsd === 'number') {
+      verdict = e.maxBidUsd >= sold
+        ? '<span class="verdict miss">можно было брать</span>'
+        : '<span class="verdict ok">ушёл дороже потолка</span>';
+    }
 
-    return `<tr>
-      <td>${new Date(e.createdAt).toLocaleString('ru-RU', { day:'2-digit', month:'2-digit', hour:'2-digit', minute:'2-digit' })}</td>
-      <td>${title}<br><span style="color:#a1a1aa;font-size:12px">${lotCell}</span></td>
-      <td>${decisionTag(e.decision)}</td>
-      <td class="num">${usd(e.marketValueUsd)}</td>
-      <td class="num">${usd(e.repairCostUsd)}${e.repairCostSource === 'norm' ? '<br><span class="norm">норматив</span>' : ''}</td>
-      <td class="num"><b>${usd(e.maxBidUsd)}</b></td>
-      <td class="num">${sold === null
-        ? `<input type="number" placeholder="цена" data-lot="${e.lotNumber}"> <button onclick="save('${e.lotNumber}')">OK</button>`
-        : usd(sold)}</td>
-      <td>${verdict}</td>
-    </tr>`;
+    const priceCell = sold === null
+      ? `<input type="number" placeholder="цена" data-lot="${lot}"> <button onclick="save('${lot}')">OK</button>`
+      : `<b>${usd(sold)}</b>`;
+
+    return `<div class="lot">
+      <div class="row">
+        <div>
+          <div class="car">${title}</div>
+          <div class="lotno">${link} · ${when(e.createdAt)}</div>
+        </div>
+        <div>${decisionTag(e.decision)}</div>
+        <div class="cell"><div class="k">Рынок</div><div class="v">${usd(e.marketValueUsd)}</div></div>
+        <div class="cell"><div class="k">Ремонт</div><div class="v">${usd(e.repairCostUsd)}
+          <span class="src ${srcClass[e.repairCostSource] || ''}">${srcLabel[e.repairCostSource] || '—'}</span></div></div>
+        <div class="cell"><div class="k">Наш потолок</div>
+          <div class="v big">${e.viable ? usd(e.maxBidUsd) : 'не окупается'}</div>${changed}</div>
+        <div class="cell"><div class="k">Ушёл за</div><div class="v">${priceCell}</div><div>${verdict}</div></div>
+      </div>
+      <details>
+        <summary>Из чего сложился потолок${past.length ? ` · оценок было ${past.length + 1}` : ''}</summary>
+        <div class="panel">
+          <div><h4>Расчёт</h4>${renderCalc(e)}</div>
+          <div><h4>Прошлые оценки</h4>${renderPast(past)}</div>
+        </div>
+      </details>
+    </div>`;
   }).join('');
-
-  document.getElementById('content').innerHTML = `
-    <table>
-      <thead><tr>
-        <th>Когда</th><th>Автомобиль</th><th>Решение</th>
-        <th style="text-align:right">Рынок</th><th style="text-align:right">Ремонт</th>
-        <th style="text-align:right">Наш потолок</th><th style="text-align:right">Ушёл за</th><th>Итог</th>
-      </tr></thead>
-      <tbody>${rows}</tbody>
-    </table>`;
 }
 
 async function save(lot) {
   const input = document.querySelector(`input[data-lot="${lot}"]`);
   const price = Number(input.value);
-
-  if (!Number.isFinite(price) || price <= 0) {
-    input.focus();
-    return;
-  }
+  if (!Number.isFinite(price) || price <= 0) { input.focus(); return; }
 
   const res = await fetch('/api/history/actual', {
     method: 'POST',

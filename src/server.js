@@ -179,6 +179,10 @@ app.post("/api/economics/max-bid", (req, res) => {
             damageType: result.damageType || null,
             maxBidUsd: result.maxBidUsd ?? null,
             viable: result.viable === true,
+            // Без раскладки нельзя объяснить, почему потолок именно такой.
+            breakdown: result.breakdown || null,
+            assumptions: result.assumptions || null,
+            notViableReason: result.viable === false ? result.reason : null,
             decision: vehicle.decision || null,
             finalScore: vehicle.finalScore ?? null,
             confidence: vehicle.confidence || null,
