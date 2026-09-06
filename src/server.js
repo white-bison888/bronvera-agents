@@ -1,3 +1,5 @@
+require("dotenv").config();
+
 const express = require("express");
 const cors = require("cors");
 const path = require("path");
@@ -5,6 +7,8 @@ const path = require("path");
 const BidCarsProvider = require("./providers/bidcars");
 const { calculateMaxBid } = require("./economics/max-bid");
 const history = require("./history/store");
+const LotPhotoCollector = require("./providers/lot-photos");
+const PhotoAssessor = require("./vision/photo-assessor");
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -13,6 +17,8 @@ app.use(cors());
 app.use(express.json());
 
 const bidCars = new BidCarsProvider();
+const photoCollector = new LotPhotoCollector();
+const photoAssessor = new PhotoAssessor();
 
 app.get("/health", (req, res) => {
   res.json({
@@ -138,8 +144,15 @@ app.post("/api/economics/max-bid", (req, res) => {
       if (listing)
         listings.set(String(vehicle.lotNumber), listing);
 
+      // Разбор фотографий, если он уже делался для этого лота.
+      const photoAssessment = photoAssessor.getCached(vehicle.lotNumber);
+
       return calculateMaxBid(
-        listing ? { ...listing, ...vehicle } : vehicle,
+        {
+          ...(listing || {}),
+          ...vehicle,
+          ...(photoAssessment ? { photoAssessment } : {}),
+        },
         body.rates || {}
       );
     });
@@ -201,6 +214,77 @@ app.post("/api/economics/max-bid", (req, res) => {
       success: false,
       error: error.message,
       results: [],
+    });
+  }
+});
+
+app.post("/api/photos/assess", async (req, res) => {
+  try {
+    const body = req.body || {};
+
+    // Номера лотов ищем в любой структуре: так узел Dify может слать
+    // готовый список отобранных лотов без промежуточной подготовки.
+    const collectLotNumbers = (node, acc) => {
+      if (Array.isArray(node)) {
+        node.forEach(item => collectLotNumbers(item, acc));
+      } else if (node && typeof node === "object") {
+        if (node.lotNumber)
+          acc.add(String(node.lotNumber));
+
+        Object.values(node).forEach(value => collectLotNumbers(value, acc));
+      }
+
+      return acc;
+    };
+
+    const lotNumbers = Array.isArray(body.lotNumbers)
+      ? body.lotNumbers
+      : [...collectLotNumbers(body, new Set())];
+
+    if (lotNumbers.length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: "Нужен список lotNumbers",
+        assessments: [],
+      });
+    }
+
+    console.log(`\n📷 Оценка по фото: ${lotNumbers.length} лот(ов)`);
+
+    // Ссылку на страницу лота и заявленное повреждение берём из реестра —
+    // снаружи их передавать не нужно.
+    const lots = lotNumbers.map((lotNumber) => {
+      const listing = bidCars.findByLotNumber(lotNumber) || {};
+
+      return {
+        lotNumber,
+        url: listing.url || null,
+        make: listing.make || null,
+        model: listing.model || null,
+        year: listing.year || null,
+        primaryDamage: listing.primaryDamage || null,
+        fuelType: listing.fuelType || null,
+      };
+    });
+
+    const photosByLot = await photoCollector.collect(
+      lots.filter(lot => lot.url)
+    );
+
+    const assessments = await photoAssessor.assess(lots, photosByLot);
+
+    res.json({
+      success: true,
+      count: assessments.length,
+      assessments,
+    });
+  } catch (error) {
+    console.error("Photo assess error:", error);
+
+    res.status(500).json({
+      success: false,
+      error: error.message,
+      assessments: [],
     });
   }
 });

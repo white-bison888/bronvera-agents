@@ -94,12 +94,22 @@ const calculateMaxBid = (vehicle, overrides = {}) => {
     };
   }
 
-  let repairCost = pickRepairCost(vehicle, rates.repairCostBasis);
-  let repairCostSource = "assessor";
+  // Оценка по фотографиям точнее текстовой: там видны силовые элементы
+  // и реальная глубина удара, поэтому она имеет приоритет.
+  const photo = vehicle.photoAssessment;
+
+  let repairCost = photo
+    ? pickRepairCost(photo, rates.repairCostBasis)
+    : null;
+
+  let repairCostSource = repairCost === null ? "assessor" : "photo";
   let damageType = null;
 
-  // ASSESSOR не смог оценить ремонт (обычно нет фотографий) —
-  // берём норматив по типу повреждения и помечаем это в ответе.
+  if (repairCost === null)
+    repairCost = pickRepairCost(vehicle, rates.repairCostBasis);
+
+  // Ни фотографий, ни оценки ASSESSOR — берём норматив по типу
+  // повреждения и помечаем это в ответе.
   if (repairCost === null) {
     const norm = estimateRepairFromNorms(vehicle, rates);
 
