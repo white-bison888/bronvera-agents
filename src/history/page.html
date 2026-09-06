@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BRONVERA — История рекомендаций</title>
+<style>
+  :root { color-scheme: light; }
+  body {
+    margin: 0; padding: 32px;
+    font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    background: #f7f7f8; color: #18181b;
+  }
+  .wrap { max-width: 1100px; margin: 0 auto; }
+  h1 { font-size: 24px; margin: 0 0 4px; letter-spacing: -0.02em; }
+  .sub { color: #71717a; margin-bottom: 24px; }
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; margin-bottom: 24px; }
+  .card { background: #fff; border: 1px solid #e4e4e7; border-radius: 12px; padding: 14px 16px; }
+  .card .label { font-size: 12px; color: #71717a; }
+  .card .value { font-size: 22px; font-weight: 600; margin-top: 2px; }
+  table { width: 100%; border-collapse: collapse; background: #fff;
+          border: 1px solid #e4e4e7; border-radius: 12px; overflow: hidden; }
+  th, td { padding: 10px 12px; text-align: left; border-bottom: 1px solid #f1f1f3; }
+  th { font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; color: #71717a; background: #fafafa; }
+  tr:last-child td { border-bottom: 0; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .tag { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 12px; font-weight: 600; }
+  .buy { background: #ecfdf5; color: #047857; }
+  .watch { background: #fffbeb; color: #b45309; }
+  .skip { background: #fef2f2; color: #b91c1c; }
+  .norm { font-size: 11px; color: #b45309; }
+  .miss { color: #047857; font-weight: 600; }
+  .ok { color: #71717a; }
+  input, button { font: inherit; }
+  input { padding: 7px 10px; border: 1px solid #d4d4d8; border-radius: 8px; width: 110px; }
+  button { padding: 7px 14px; border: 0; border-radius: 8px; background: #18181b; color: #fff; cursor: pointer; }
+  button:hover { background: #000; }
+  .empty { padding: 40px; text-align: center; color: #71717a; background: #fff;
+           border: 1px solid #e4e4e7; border-radius: 12px; }
+  a { color: #2563eb; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>История рекомендаций</h1>
+  <div class="sub">Что BRONVERA советовала и чем закончились торги</div>
+
+  <div class="cards" id="cards"></div>
+  <div id="content"></div>
+</div>
+
+<script>
+const usd = v => typeof v === 'number' ? '$' + Math.round(v).toLocaleString('en-US') : '—';
+
+const decisionTag = d => {
+  if (!d) return '—';
+  const cls = d === 'BUY' ? 'buy' : d === 'WATCH' ? 'watch' : 'skip';
+  return `<span class="tag ${cls}">${d}</span>`;
+};
+
+async function load() {
+  const [entriesRes, summaryRes] = await Promise.all([
+    fetch('/api/history').then(r => r.json()),
+    fetch('/api/history/summary').then(r => r.json()),
+  ]);
+
+  const s = summaryRes;
+  document.getElementById('cards').innerHTML = `
+    <div class="card"><div class="label">Лотов отслеживается</div><div class="value">${s.lotsTracked}</div></div>
+    <div class="card"><div class="label">Известна цена торгов</div><div class="value">${s.withActualPrice}</div></div>
+    <div class="card"><div class="label">Среднее отклонение</div><div class="value">${s.averageDeviationPct === null ? '—' : s.averageDeviationPct + '%'}</div></div>
+    <div class="card"><div class="label">Всего записей</div><div class="value">${s.totalEntries}</div></div>`;
+
+  const entries = entriesRes.entries || [];
+
+  if (!entries.length) {
+    document.getElementById('content').innerHTML =
+      '<div class="empty">Пока пусто. Запусти анализ на сайте — рекомендации появятся здесь.</div>';
+    return;
+  }
+
+  const rows = entries.map(e => {
+    const sold = e.actual && typeof e.actual.soldPriceUsd === 'number' ? e.actual.soldPriceUsd : null;
+    let verdict = '';
+
+    if (sold !== null && typeof e.maxBidUsd === 'number') {
+      const gap = e.maxBidUsd - sold;
+      verdict = gap >= 0
+        ? `<span class="miss">можно было брать</span>`
+        : `<span class="ok">ушёл дороже потолка</span>`;
+    }
+
+    const title = [e.year, e.make, e.model].filter(Boolean).join(' ') || e.lotNumber;
+    const lotCell = e.url
+      ? `<a href="${e.url}" target="_blank" rel="noopener">${e.lotNumber}</a>`
+      : e.lotNumber;
+
+    return `<tr>
+      <td>${new Date(e.createdAt).toLocaleString('ru-RU', { day:'2-digit', month:'2-digit', hour:'2-digit', minute:'2-digit' })}</td>
+      <td>${title}<br><span style="color:#a1a1aa;font-size:12px">${lotCell}</span></td>
+      <td>${decisionTag(e.decision)}</td>
+      <td class="num">${usd(e.marketValueUsd)}</td>
+      <td class="num">${usd(e.repairCostUsd)}${e.repairCostSource === 'norm' ? '<br><span class="norm">норматив</span>' : ''}</td>
+      <td class="num"><b>${usd(e.maxBidUsd)}</b></td>
+      <td class="num">${sold === null
+        ? `<input type="number" placeholder="цена" data-lot="${e.lotNumber}"> <button onclick="save('${e.lotNumber}')">OK</button>`
+        : usd(sold)}</td>
+      <td>${verdict}</td>
+    </tr>`;
+  }).join('');
+
+  document.getElementById('content').innerHTML = `
+    <table>
+      <thead><tr>
+        <th>Когда</th><th>Автомобиль</th><th>Решение</th>
+        <th style="text-align:right">Рынок</th><th style="text-align:right">Ремонт</th>
+        <th style="text-align:right">Наш потолок</th><th style="text-align:right">Ушёл за</th><th>Итог</th>
+      </tr></thead>
+      <tbody>${rows}</tbody>
+    </table>`;
+}
+
+async function save(lot) {
+  const input = document.querySelector(`input[data-lot="${lot}"]`);
+  const price = Number(input.value);
+
+  if (!Number.isFinite(price) || price <= 0) {
+    input.focus();
+    return;
+  }
+
+  const res = await fetch('/api/history/actual', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ lotNumber: lot, soldPriceUsd: price }),
+  });
+
+  if (res.ok) load();
+}
+
+load();
+</script>
+</body>
+</html>
