@@ -126,14 +126,27 @@ app.post("/api/economics/max-bid", (req, res) => {
 
     console.log(`\n💰 MAX BID request: ${vehicles.length} vehicle(s)`);
 
-    const results = vehicles.map(vehicle =>
-      calculateMaxBid(vehicle, body.rates || {})
-    );
+    // Тип повреждения и топливо берём из локального реестра лотов —
+    // они нужны для запасной оценки ремонта, когда ASSESSOR её не дал.
+    const results = vehicles.map((vehicle) => {
+      const listing = bidCars.findByLotNumber(vehicle.lotNumber);
+
+      return calculateMaxBid(
+        listing ? { ...listing, ...vehicle } : vehicle,
+        body.rates || {}
+      );
+    });
 
     results.forEach(result => {
+      const source = result.repairCostSource === "norm"
+        ? ` (ремонт по нормативу: ${result.damageType})`
+        : "";
+
       console.log(
         `   ${result.lotNumber || "—"}: ` +
-        (result.viable ? `$${result.maxBidUsd}` : `— (${result.reason})`)
+        (result.viable
+          ? `$${result.maxBidUsd}${source}`
+          : `— (${result.reason})`)
       );
     });
 

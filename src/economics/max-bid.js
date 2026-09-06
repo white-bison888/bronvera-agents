@@ -14,6 +14,52 @@ const defaultRates = require("./rates");
  * Отсюда цена выражается в один шаг, без подбора.
  */
 
+/*
+ * Bid.Cars описывает повреждения по-польски («Przód», «Inne | Dach»),
+ * поэтому распознаём оба языка. Порядок важен: сначала характерные
+ * случаи вроде затопления и крыши, и только потом стороны кузова.
+ */
+const damagePatterns = [
+  ["flood", /zalan|powód|powodz|flood|water/i],
+  ["hail", /grad|hail/i],
+  ["roof", /dach|roof|rollover|dachowan/i],
+  ["allOver", /dookoła|dookola|wszędzie|wszedzie|all\s*over|wszystko/i],
+  ["minor", /rys|zarysow|scratch|minor|vandal|otarcie/i],
+  ["mechanical", /mechanic|silnik|engine|skrzyni|transmission/i],
+  ["front", /przód|przod|przedni|front/i],
+  ["rear", /tył|tyl|tylni|tylna|rear|back/i],
+  ["side", /bok|boczn|side|lewy|prawy|left|right|quarter/i],
+];
+
+const classifyDamage = (vehicle) => {
+  const text = [vehicle.primaryDamage, vehicle.secondaryDamage]
+    .filter(Boolean)
+    .join(" ");
+
+  if (!text)
+    return "unknown";
+
+  const match = damagePatterns.find(([, pattern]) => pattern.test(text));
+
+  return match ? match[0] : "unknown";
+};
+
+const isElectric = vehicle => /electric|elektr|hybrid/i.test(
+  String(vehicle.fuelType || "")
+);
+
+const estimateRepairFromNorms = (vehicle, rates) => {
+  const damageType = classifyDamage(vehicle);
+  const norm = rates.repairNorms[damageType] || rates.repairNorms.unknown;
+  const multiplier = isElectric(vehicle) ? rates.evRepairMultiplier : 1;
+
+  return {
+    repairCostMin: norm[0] * multiplier,
+    repairCostMax: norm[1] * multiplier,
+    damageType,
+  };
+};
+
 const pickRepairCost = (vehicle, basis) => {
   const min = Number.isFinite(vehicle.repairCostMin) ? vehicle.repairCostMin : null;
   const max = Number.isFinite(vehicle.repairCostMax) ? vehicle.repairCostMax : null;
@@ -48,15 +94,18 @@ const calculateMaxBid = (vehicle, overrides = {}) => {
     };
   }
 
-  const repairCost = pickRepairCost(vehicle, rates.repairCostBasis);
+  let repairCost = pickRepairCost(vehicle, rates.repairCostBasis);
+  let repairCostSource = "assessor";
+  let damageType = null;
 
+  // ASSESSOR не смог оценить ремонт (обычно нет фотографий) —
+  // берём норматив по типу повреждения и помечаем это в ответе.
   if (repairCost === null) {
-    return {
-      lotNumber: vehicle.lotNumber || null,
-      maxBidUsd: null,
-      viable: false,
-      reason: "Неизвестна стоимость ремонта — расчёт был бы выдумкой",
-    };
+    const norm = estimateRepairFromNorms(vehicle, rates);
+
+    repairCost = pickRepairCost(norm, rates.repairCostBasis);
+    repairCostSource = "norm";
+    damageType = norm.damageType;
   }
 
   const resaleValue = marketValue * rates.resaleFactor;
@@ -80,6 +129,8 @@ const calculateMaxBid = (vehicle, overrides = {}) => {
       viable: false,
       reason:
         "Расходы съедают всю выручку — лот не окупается даже при нулевой ставке",
+      repairCostSource,
+      damageType,
       breakdown: {
         resaleValueUsd: round(resaleValue),
         repairCostUsd: round(repairCost),
@@ -96,6 +147,8 @@ const calculateMaxBid = (vehicle, overrides = {}) => {
     maxBidUsd: round(maxBid),
     currency: "USD",
     viable: true,
+    repairCostSource,
+    damageType,
     breakdown: {
       resaleValueUsd: round(resaleValue),
       repairCostUsd: round(repairCost),
