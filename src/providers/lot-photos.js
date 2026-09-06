@@ -192,7 +192,32 @@ class LotPhotoCollector {
     if (missing.length === 0)
       return result;
 
-    const browser = await chromium.launch({ headless: true });
+    /*
+     * Аукционы закрывают доступ адресам дата-центров: с сервера
+     * страницы лотов отдают проверку Cloudflare, которая не проходится.
+     * Резидентный прокси подставляет адрес обычного провайдера —
+     * без него сбор на сервере невозможен.
+     */
+    const proxy = process.env.PROXY_SERVER
+      ? {
+          server: process.env.PROXY_SERVER,
+          ...(process.env.PROXY_USERNAME
+            ? {
+                username: process.env.PROXY_USERNAME,
+                password: process.env.PROXY_PASSWORD || "",
+              }
+            : {}),
+        }
+      : undefined;
+
+    if (proxy)
+      console.log(`   через прокси: ${proxy.server}`);
+
+    const browser = await chromium.launch({
+      headless: true,
+      args: ["--disable-blink-features=AutomationControlled"],
+      ...(proxy ? { proxy } : {}),
+    });
 
     const context = await browser.newContext({
       userAgent:
@@ -208,6 +233,11 @@ class LotPhotoCollector {
       extraHTTPHeaders: {
         "Accept-Language": "pl-PL,pl;q=0.9,en;q=0.8",
       },
+    });
+
+    // Признак автоматизации, по которому защита узнаёт робота.
+    await context.addInitScript(() => {
+      Object.defineProperty(navigator, "webdriver", { get: () => undefined });
     });
 
     const page = await context.newPage();
