@@ -9,6 +9,8 @@ const { calculateMaxBid } = require("./economics/max-bid");
 const history = require("./history/store");
 const LotPhotoCollector = require("./providers/lot-photos");
 const PhotoAssessor = require("./vision/photo-assessor");
+const photoQueue = require("./photos/queue");
+const PhotoWorker = require("./photos/worker");
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -19,6 +21,12 @@ app.use(express.json());
 const bidCars = new BidCarsProvider();
 const photoCollector = new LotPhotoCollector();
 const photoAssessor = new PhotoAssessor();
+
+const photoWorker = new PhotoWorker({
+  bidCars,
+  photoCollector,
+  photoAssessor,
+});
 
 app.get("/health", (req, res) => {
   res.json({
@@ -271,15 +279,35 @@ app.post("/api/photos/assess", async (req, res) => {
       };
     });
 
-    const photosByLot = await photoCollector.collect(
-      lots.filter(lot => lot.url)
-    );
+    // Собираем только то, что уже лежит на диске: обращаться к Bid.Cars
+    // прямо во время анализа нельзя — он блокирует со второго лота,
+    // и прогон вставал бы на несколько минут ради отказа.
+    const photosByLot = {};
+
+    for (const lot of lots) {
+      const onDisk = photoCollector.readPhotoDir(lot.lotNumber);
+
+      if (onDisk.length > 0)
+        photosByLot[String(lot.lotNumber)] = onDisk;
+    }
 
     const assessments = await photoAssessor.assess(lots, photosByLot);
+
+    // Лоты без снимков уходят в фоновую очередь и будут собраны позже,
+    // после чего ставка пересчитается сама.
+    const missing = assessments
+      .filter(item => !item.available)
+      .map(item => ({ lotNumber: item.lotNumber }));
+
+    const queued = photoQueue.enqueue(missing, body.runId || null);
+
+    if (queued > 0)
+      console.log(`   📥 В очередь на сбор фото: ${queued}`);
 
     res.json({
       success: true,
       count: assessments.length,
+      queuedForPhotos: queued,
       assessments,
     });
   } catch (error) {
@@ -291,6 +319,16 @@ app.post("/api/photos/assess", async (req, res) => {
       assessments: [],
     });
   }
+});
+
+app.get("/api/photos/queue", (req, res) => {
+  const runId = req.query.runId ? String(req.query.runId) : null;
+
+  res.json({
+    success: true,
+    ...photoQueue.stats(runId),
+    lastCollected: photoWorker.lastResult,
+  });
 });
 
 app.get("/history", (req, res) => {
@@ -363,4 +401,6 @@ app.listen(PORT, () => {
   console.log(
     `BRONVERA API running on http://localhost:${PORT}`
   );
+
+  photoWorker.start();
 });
