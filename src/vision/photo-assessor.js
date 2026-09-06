@@ -45,6 +45,21 @@ airbagsDeployed и batteryAreaAffected ставь null, если по фото �
 
 Тексты в visibleDamage и notes пиши по-русски.`;
 
+// Снимки экрана сохраняются в PNG, скачанные с аукциона — в JPEG.
+// Неверно указанный тип API отвергает.
+const mediaTypeFor = (file) => {
+  const extension = path.extname(file).toLowerCase();
+
+  if (extension === ".png")
+    return "image/png";
+
+  if (extension === ".webp")
+    return "image/webp";
+
+  return "image/jpeg";
+};
+
+
 class PhotoAssessor {
   constructor(options = {}) {
     this.apiKey = options.apiKey || process.env.ANTHROPIC_API_KEY || "";
@@ -131,7 +146,7 @@ class PhotoAssessor {
         type: "image",
         source: {
           type: "base64",
-          media_type: "image/jpeg",
+          media_type: mediaTypeFor(file),
           data: fs.readFileSync(file).toString("base64"),
         },
       })),

@@ -23,8 +23,13 @@ class LotPhotoCollector {
 
     this.maxPhotosPerLot = options.maxPhotosPerLot || 6;
 
-    // Пауза между лотами, чтобы не выглядеть роботом.
-    this.delayMs = options.delayMs || 800;
+    /*
+     * Bid.Cars отдаёт 403 уже со второго-третьего лота подряд, поэтому
+     * пауза между страницами длинная и слегка случайная — ровный
+     * интервал сам по себе выдаёт автоматизацию.
+     */
+    this.delayMs = options.delayMs || 5000;
+    this.delayJitterMs = options.delayJitterMs || 3000;
   }
 
   loadCache() {
@@ -55,43 +60,112 @@ class LotPhotoCollector {
     return [...new Set(found)].slice(0, this.maxPhotosPerLot);
   }
 
-  async downloadPhotos(context, lotNumber, urls) {
+  /*
+   * Сначала берём то, что браузер скачал сам при отрисовке страницы,
+   * а недостающее догружаем по одному — из того же контекста, где уже
+   * стоят куки Cloudflare. Пачкой качать нельзя: всплеск запросов
+   * приводит к 403.
+   */
+  async savePhotos(context, lotNumber, urls, intercepted) {
     const lotDir = path.join(this.photoDir, String(lotNumber));
 
     fs.mkdirSync(lotDir, { recursive: true });
 
-    // Снимки одного лота качаем разом: последовательная загрузка
-    // пяти лотов не укладывалась в тайм-аут вызывающего узла.
-    const downloads = urls.map(async (url, index) => {
+    const files = [];
+
+    for (const [index, url] of urls.entries()) {
       const file = path.join(lotDir, `${index + 1}.jpg`);
 
-      if (fs.existsSync(file))
-        return file;
-
-      // Запрос идёт из контекста браузера, где уже стоят куки Cloudflare,
-      // полученные при открытии страницы лота.
-      for (let attempt = 0; attempt < 2; attempt += 1) {
-        try {
-          const response = await context.request.get(url, {
-            headers: { referer: "https://bid.cars/" },
-            timeout: 20000,
-          });
-
-          if (!response.ok())
-            continue;
-
-          fs.writeFileSync(file, await response.body());
-
-          return file;
-        } catch {
-          // Вторая попытка: одиночные отказы Cloudflare не редкость.
-        }
+      if (fs.existsSync(file)) {
+        files.push(file);
+        continue;
       }
 
-      return null;
-    });
+      const body = intercepted.get(url);
 
-    return (await Promise.all(downloads)).filter(Boolean);
+      if (body) {
+        fs.writeFileSync(file, body);
+        files.push(file);
+        continue;
+      }
+
+      try {
+        const response = await context.request.get(url, {
+          headers: { referer: "https://bid.cars/" },
+          timeout: 20000,
+        });
+
+        if (!response.ok())
+          continue;
+
+        fs.writeFileSync(file, await response.body());
+        files.push(file);
+
+        await new Promise(resolve => setTimeout(resolve, 400));
+      } catch {
+        // Один пропущенный кадр не мешает оценке остальных.
+      }
+    }
+
+    return files;
+  }
+
+  /*
+   * Запасной путь, когда Bid.Cars отдаёт 403 на сами файлы: снимок
+   * уже отрисован в браузере, поэтому его можно снять с экрана — это
+   * не требует ни одного дополнительного запроса к сайту.
+   */
+  async screenshotPhotos(page, lotNumber, limit) {
+    const lotDir = path.join(this.photoDir, String(lotNumber));
+
+    fs.mkdirSync(lotDir, { recursive: true });
+
+    const images = await page
+      .locator('img[src*="images.bid.cars"]')
+      .all();
+
+    const files = [];
+
+    for (const [index, image] of images.slice(0, limit).entries()) {
+      const file = path.join(lotDir, `shot-${index + 1}.jpg`);
+
+      if (fs.existsSync(file)) {
+        files.push(file);
+        continue;
+      }
+
+      try {
+        const box = await image.boundingBox();
+
+        // Иконки и невидимые превью для оценки бесполезны.
+        if (!box || box.width < 300 || box.height < 200)
+          continue;
+
+        await image.screenshot({ path: file, type: "jpeg", quality: 85 });
+        files.push(file);
+      } catch {
+        // Элемент мог уехать за пределы экрана — пропускаем.
+      }
+    }
+
+    return files;
+  }
+
+  /*
+   * Источник истины — файлы на диске, а не запись в кэше: снимки
+   * можно положить в папку лота руками, когда Bid.Cars блокирует сбор.
+   */
+  readPhotoDir(lotNumber) {
+    const lotDir = path.join(this.photoDir, String(lotNumber));
+
+    if (!fs.existsSync(lotDir))
+      return [];
+
+    return fs
+      .readdirSync(lotDir)
+      .filter(name => /\.(jpe?g|png|webp)$/i.test(name))
+      .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }))
+      .map(name => path.join(lotDir, name));
   }
 
   async collect(lots = []) {
@@ -99,10 +173,10 @@ class LotPhotoCollector {
     const result = {};
 
     const missing = lots.filter((lot) => {
-      const cached = cache[String(lot.lotNumber)];
+      const onDisk = this.readPhotoDir(lot.lotNumber);
 
-      if (cached && (cached.files || []).every(file => fs.existsSync(file))) {
-        result[String(lot.lotNumber)] = cached.files;
+      if (onDisk.length > 0) {
+        result[String(lot.lotNumber)] = onDisk;
 
         return false;
       }
@@ -138,9 +212,40 @@ class LotPhotoCollector {
 
     const page = await context.newPage();
 
+    // Снимки, которые браузер скачал сам при отрисовке страницы.
+    // Так они достаются бесплатно, без повторных запросов к Bid.Cars.
+    const intercepted = new Map();
+
+    page.on("response", async (response) => {
+      const url = response.url();
+
+      if (!url.includes("images.bid.cars") || !url.endsWith(".jpg"))
+        return;
+
+      if (!response.ok())
+        return;
+
+      try {
+        intercepted.set(url, await response.body());
+      } catch {
+        // Тело могло быть уже недоступно — не страшно, докачаем отдельно.
+      }
+    });
+
     try {
+      // Прогрев: заходим как обычный посетитель, с главной.
+      // Переход сразу на карточку лота выглядит подозрительно.
+      await page.goto("https://bid.cars/pl/", {
+        waitUntil: "domcontentloaded",
+        timeout: 45000,
+      });
+
+      await page.waitForTimeout(2000);
+
       for (const lot of missing) {
         const key = String(lot.lotNumber);
+
+        intercepted.clear();
 
         try {
           const response = await page.goto(lot.url, {
@@ -149,17 +254,37 @@ class LotPhotoCollector {
           });
 
           if (!response || !response.ok()) {
-            console.log(
-              `   ${key}: страница недоступна ` +
-              `(${response ? response.status() : "нет ответа"})`
-            );
+            const status = response ? response.status() : "нет ответа";
+
+            console.log(`   ${key}: страница недоступна (${status})`);
 
             result[key] = [];
+
+            // Отказ означает, что нас заметили: ждём заметно дольше.
+            await page.waitForTimeout(this.delayMs * 3);
             continue;
           }
 
+          // Галерея подгружается по мере прокрутки.
+          await page.mouse.wheel(0, 2500);
+          await page.waitForTimeout(2500);
+
           const urls = this.extractPhotoUrls(await page.content());
-          const files = await this.downloadPhotos(context, key, urls);
+
+          let files = await this.savePhotos(context, key, urls, intercepted);
+
+          // Файлы могут быть закрыты, даже когда страница открылась —
+          // тогда снимаем то, что уже видно на экране.
+          if (files.length === 0) {
+            files = await this.screenshotPhotos(
+              page,
+              key,
+              this.maxPhotosPerLot
+            );
+
+            if (files.length > 0)
+              console.log(`   ${key}: файлы закрыты, снято с экрана`);
+          }
 
           result[key] = files;
 
@@ -182,7 +307,9 @@ class LotPhotoCollector {
           result[key] = [];
         }
 
-        await page.waitForTimeout(this.delayMs);
+        await page.waitForTimeout(
+          this.delayMs + Math.random() * this.delayJitterMs
+        );
       }
     } finally {
       await browser.close();
