@@ -7,6 +7,7 @@ const sharp = require("sharp");
 
 const BidCarsProvider = require("./providers/bidcars");
 const { calculateMaxBid } = require("./economics/max-bid");
+const { describeDamage } = require("./providers/damage-labels");
 const history = require("./history/store");
 const LotPhotoCollector = require("./providers/lot-photos");
 const PhotoAssessor = require("./vision/photo-assessor");
@@ -421,7 +422,10 @@ const planPhotos = (filters = {}) => {
         model: vehicle.model ?? null,
         mileage: vehicle.mileage ?? null,
         currentBid: vehicle.currentBid ?? null,
-        primaryDamage: vehicle.primaryDamage ?? null,
+        primaryDamage: describeDamage(
+          vehicle.primaryDamage,
+          vehicle.secondaryDamage
+        ),
         saleDate: vehicle.saleDate ?? null,
         auctionEstimateMin: vehicle.auctionEstimateMin ?? null,
         auctionEstimateMax: vehicle.auctionEstimateMax ?? null,
@@ -565,7 +569,10 @@ app.get("/api/history", (req, res) => {
       auctionEstimateMin: listing.auctionEstimateMin ?? null,
       auctionEstimateMax: listing.auctionEstimateMax ?? null,
       mileage: listing.mileage ?? null,
-      primaryDamage: listing.primaryDamage || entry.primaryDamage || null,
+      primaryDamage: describeDamage(
+        listing.primaryDamage || entry.primaryDamage,
+        listing.secondaryDamage
+      ),
       photoCount: photoCollector.readPhotoDir(entry.lotNumber).length,
     };
   });

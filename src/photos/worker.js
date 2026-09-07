@@ -31,9 +31,15 @@ class PhotoWorker {
     this.timer = setInterval(() => this.tick(), this.intervalMs);
     setTimeout(() => this.tick(), 30000);
 
-    // Раз в час добираем лоты из реестра, у которых снимков ещё нет.
-    this.refillTimer = setInterval(() => this.refillFromRegistry(), 3600000);
-    setTimeout(() => this.refillFromRegistry(), 10000);
+    /*
+     * Слепое пополнение всем реестром выключено: там оседают машины
+     * из старых поисков — Model S 2013 года и прочее, что искать
+     * никто не собирался. Лоты попадают в очередь по запросу.
+     */
+    if (process.env.PHOTO_AUTOFILL === "true") {
+      this.refillTimer = setInterval(() => this.refillFromRegistry(), 3600000);
+      setTimeout(() => this.refillFromRegistry(), 10000);
+    }
   }
 
   /*

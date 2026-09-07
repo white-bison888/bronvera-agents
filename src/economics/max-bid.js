@@ -174,11 +174,20 @@ const calculateMaxBid = (vehicle, overrides = {}) => {
         maxBid + auctionFees + shipping + duty + vat + repairCost + rates.localCostsUsd,
       ),
     },
+    // Все ставки целиком: без них таблица расходов остаётся набором
+    // чисел, который нечем проверить и не с чем спорить.
     assumptions: {
       resaleFactor: rates.resaleFactor,
       repairCostBasis: rates.repairCostBasis,
       targetProfitRate: rates.targetProfitRate,
       riskReserveRate: rates.riskReserveRate,
+      auctionFeeRate: rates.auctionFeeRate,
+      auctionFeeFixed: rates.auctionFeeFixed,
+      usTransportUsd: rates.usTransportUsd,
+      oceanFreightUsd: rates.oceanFreightUsd,
+      dutyRate: rates.dutyRate,
+      vatRate: rates.vatRate,
+      localCostsUsd: rates.localCostsUsd,
     },
   };
 };
