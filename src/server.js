@@ -405,6 +405,40 @@ const planPhotos = (filters = {}) => {
   // начинает отбивать запросы.
   const minutesNeeded = missing.length * 4;
 
+  /*
+   * Сами машины, а не только счётчик: иначе непонятно, что стоит
+   * за цифрой «подходит 42» и стоит ли вообще запускать анализ.
+   * Ближайшие торги сверху — по ним решение нужно раньше.
+   */
+  const vehicles = matching
+    .map((vehicle) => {
+      const assessment = photoAssessor.getCached(vehicle.lotNumber);
+
+      return {
+        lotNumber: vehicle.lotNumber,
+        year: vehicle.year ?? null,
+        make: vehicle.make ?? null,
+        model: vehicle.model ?? null,
+        mileage: vehicle.mileage ?? null,
+        currentBid: vehicle.currentBid ?? null,
+        primaryDamage: vehicle.primaryDamage ?? null,
+        saleDate: vehicle.saleDate ?? null,
+        auctionEstimateMin: vehicle.auctionEstimateMin ?? null,
+        auctionEstimateMax: vehicle.auctionEstimateMax ?? null,
+        url: vehicle.url ?? null,
+        photoCount: photoCollector.readPhotoDir(vehicle.lotNumber).length,
+        severity: assessment?.available ? assessment.severity : null,
+        repairCostMin: assessment?.repairCostMin ?? null,
+        repairCostMax: assessment?.repairCostMax ?? null,
+      };
+    })
+    .sort((a, b) => {
+      const aDate = a.saleDate ? new Date(a.saleDate).getTime() : Infinity;
+      const bDate = b.saleDate ? new Date(b.saleDate).getTime() : Infinity;
+
+      return aDate - bDate;
+    });
+
   return {
     matching: matching.length,
     withPhotos: withPhotos.length,
@@ -412,6 +446,7 @@ const planPhotos = (filters = {}) => {
     minutesNeeded,
     trafficMb: Math.round(missing.length * 1.4),
     lots: missing.map(vehicle => ({ lotNumber: vehicle.lotNumber })),
+    vehicles,
   };
 };
 
