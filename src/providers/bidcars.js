@@ -2,6 +2,7 @@ const fs = require("fs");
 const path = require("path");
 const cheerio = require("cheerio");
 const { chromium } = require("playwright");
+const { parseAuctionTiming } = require("./auction-timing");
 
 class BidCarsRateLimitError extends Error {
   constructor(message, retryAfterSeconds = null) {
@@ -1631,8 +1632,9 @@ class BidCarsProvider {
               text
             ),
 
-          saleDate:
-            null,
+          // Дата торгов, остаток времени и оценка аукциона лежат
+          // в той же строке, что и статус запуска.
+          ...parseAuctionTiming(text),
 
           estimatedRetailValue:
             retailMatch
