@@ -78,8 +78,44 @@ const pickRepairCost = (vehicle, basis) => {
 
 const round = value => Math.round(value);
 
+/*
+ * Оценка считается состоявшейся, только если модель действительно
+ * что-то разглядела и назвала стоимость ремонта. Ответы вида
+ * «на снимках ничего не видно» приходят с available: false.
+ */
+const hasPhotoAssessment = (photo) => {
+  if (!photo || photo.available === false)
+    return false;
+
+  return Number.isFinite(photo.repairCostMin)
+    || Number.isFinite(photo.repairCostMax);
+};
+
 const calculateMaxBid = (vehicle, overrides = {}) => {
   const rates = { ...defaultRates, ...overrides };
+
+  /*
+   * ГЛАВНОЕ ПРАВИЛО: без оценки по фотографиям заключения нет.
+   *
+   * Текстовое описание лота говорит «повреждён перёд», но не говорит,
+   * сложился ли лонжерон. Потолок ставки, посчитанный по нормативу,
+   * выглядит как настоящий и ведёт к покупке вслепую, поэтому такой
+   * лот остаётся без вердикта до появления пригодных снимков.
+   */
+  const photo = vehicle.photoAssessment;
+
+  if (rates.requirePhotoAssessment !== false && !hasPhotoAssessment(photo)) {
+    return {
+      lotNumber: vehicle.lotNumber || null,
+      maxBidUsd: null,
+      viable: false,
+      verdict: "PENDING_PHOTOS",
+      photoStatus: photo ? "unusable" : "missing",
+      reason: photo
+        ? `Оценка по фотографиям не получилась: ${photo.reason || "снимки непригодны"}. Заключение не выдаётся.`
+        : "Нет оценки по фотографиям — заключение не выдаётся",
+    };
+  }
 
   const marketValue = Number.isFinite(vehicle.marketValueUsd)
     ? vehicle.marketValueUsd
@@ -96,8 +132,6 @@ const calculateMaxBid = (vehicle, overrides = {}) => {
 
   // Оценка по фотографиям точнее текстовой: там видны силовые элементы
   // и реальная глубина удара, поэтому она имеет приоритет.
-  const photo = vehicle.photoAssessment;
-
   let repairCost = photo
     ? pickRepairCost(photo, rates.repairCostBasis)
     : null;
@@ -118,7 +152,15 @@ const calculateMaxBid = (vehicle, overrides = {}) => {
     damageType = norm.damageType;
   }
 
-  const resaleValue = marketValue * rates.resaleFactor;
+  /*
+   * Если известна цена живого аналога в Польше, она надёжнее любых
+   * коэффициентов — это факт рынка, а не пересчёт американской витрины.
+   */
+  const localMarketValue = Number.isFinite(vehicle.polandPriceUsd)
+    ? vehicle.polandPriceUsd
+    : marketValue * rates.polandMarketFactor;
+
+  const resaleValue = localMarketValue * rates.resaleFactor;
   const riskReserve = resaleValue * rates.riskReserveRate;
   const targetProfit = resaleValue * rates.targetProfitRate;
 
@@ -137,6 +179,8 @@ const calculateMaxBid = (vehicle, overrides = {}) => {
       lotNumber: vehicle.lotNumber || null,
       maxBidUsd: 0,
       viable: false,
+      verdict: "SKIP",
+      photoStatus: hasPhotoAssessment(photo) ? "ok" : "skipped",
       reason:
         "Расходы съедают всю выручку — лот не окупается даже при нулевой ставке",
       repairCostSource,
@@ -157,9 +201,13 @@ const calculateMaxBid = (vehicle, overrides = {}) => {
     maxBidUsd: round(maxBid),
     currency: "USD",
     viable: true,
+    photoStatus: hasPhotoAssessment(photo) ? "ok" : "skipped",
+    photosAnalyzed: photo?.photosAnalyzed ?? null,
     repairCostSource,
     damageType,
     breakdown: {
+      marketValueUsd: round(marketValue),
+      localMarketValueUsd: round(localMarketValue),
       resaleValueUsd: round(resaleValue),
       repairCostUsd: round(repairCost),
       auctionFeesUsd: round(auctionFees),
@@ -177,8 +225,12 @@ const calculateMaxBid = (vehicle, overrides = {}) => {
     // Все ставки целиком: без них таблица расходов остаётся набором
     // чисел, который нечем проверить и не с чем спорить.
     assumptions: {
+      polandMarketFactor: rates.polandMarketFactor,
       resaleFactor: rates.resaleFactor,
       repairCostBasis: rates.repairCostBasis,
+      localPriceSource: Number.isFinite(vehicle.polandPriceUsd)
+        ? "цена аналога в Польше, введена вручную"
+        : "пересчёт американской оценки",
       targetProfitRate: rates.targetProfitRate,
       riskReserveRate: rates.riskReserveRate,
       auctionFeeRate: rates.auctionFeeRate,

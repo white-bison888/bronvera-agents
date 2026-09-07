@@ -191,6 +191,11 @@ class PhotoWorker {
       ...listing,
       lotNumber,
       marketValueUsd: latest.marketValueUsd,
+      // Введённая вручную цена польского аналога надёжнее пересчёта,
+      // и при уточнении её терять нельзя.
+      ...(Number.isFinite(latest.marketReference?.polandPriceUsd)
+        ? { polandPriceUsd: latest.marketReference.polandPriceUsd }
+        : {}),
       photoAssessment: assessment,
     });
 
@@ -211,7 +216,14 @@ class PhotoWorker {
         breakdown: result.breakdown || null,
         assumptions: result.assumptions || null,
         notViableReason: result.viable === false ? result.reason : null,
-        decision: latest.decision,
+        photoStatus: result.photoStatus || null,
+        photosAnalyzed: result.photosAnalyzed ?? null,
+        marketReference: latest.marketReference || null,
+        // Вердикт, который придержали до появления снимков, теперь
+        // подтверждён разбором фотографий и возвращается в карточку.
+        decision: latest.decision === "PENDING_PHOTOS"
+          ? latest.decisionHeld || null
+          : latest.decision,
         finalScore: latest.finalScore,
         confidence: latest.confidence,
         refinedByPhotos: true,

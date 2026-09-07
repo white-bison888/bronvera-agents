@@ -85,6 +85,43 @@ const setActual = (lotNumber, actual) => {
 };
 
 /*
+ * Цены живых аналогов, введённые вручную. Они надёжнее пересчёта
+ * американской витрины и со временем позволят посчитать поправочный
+ * коэффициент по фактам, а не подбирать его на глаз.
+ */
+const setMarketReference = (lotNumber, reference) => {
+  const target = String(lotNumber);
+  const entries = readAll();
+  let updated = 0;
+
+  const next = entries.map((entry) => {
+    if (String(entry.lotNumber) !== target)
+      return entry;
+
+    updated += 1;
+
+    return {
+      ...entry,
+      marketReference: {
+        ...(entry.marketReference || {}),
+        ...(Number.isFinite(reference.polandPriceUsd)
+          ? { polandPriceUsd: reference.polandPriceUsd }
+          : {}),
+        ...(Number.isFinite(reference.belarusPriceUsd)
+          ? { belarusPriceUsd: reference.belarusPriceUsd }
+          : {}),
+        updatedAt: new Date().toISOString(),
+      },
+    };
+  });
+
+  if (updated > 0)
+    writeAll(next);
+
+  return updated;
+};
+
+/*
  * Сводка нужна для главного вопроса: где прогноз разошёлся с торгами.
  *
  * missedOpportunity — ушло дешевле нашего потолка, покупка была возможна.
@@ -137,5 +174,6 @@ module.exports = {
   readAll,
   appendRun,
   setActual,
+  setMarketReference,
   buildSummary,
 };

@@ -210,7 +210,19 @@ app.post("/api/economics/max-bid", (req, res) => {
             breakdown: result.breakdown || null,
             assumptions: result.assumptions || null,
             notViableReason: result.viable === false ? result.reason : null,
-            decision: vehicle.decision || null,
+            photoStatus: result.photoStatus || null,
+            photosAnalyzed: result.photosAnalyzed ?? null,
+            /*
+             * Вердикт ORCHESTRATOR строится по тексту объявления.
+             * Пока нет разбора снимков, он не подтверждён, поэтому
+             * в историю уходит состояние ожидания, а не BUY/WATCH/SKIP.
+             */
+            decision: result.verdict === "PENDING_PHOTOS"
+              ? "PENDING_PHOTOS"
+              : vehicle.decision || null,
+            decisionHeld: result.verdict === "PENDING_PHOTOS"
+              ? vehicle.decision || null
+              : null,
             finalScore: vehicle.finalScore ?? null,
             confidence: vehicle.confidence || null,
           };
@@ -472,17 +484,38 @@ app.get("/api/search/last", (req, res) => {
 });
 
 app.post("/api/photos/collect", (req, res) => {
-  const plan = planPhotos(req.body || {});
-  const queued = photoQueue.enqueue(plan.lots, (req.body || {}).runId || null);
+  const body = req.body || {};
+
+  /*
+   * Явный список лотов важнее фильтров: он нужен, чтобы пересобрать
+   * несколько конкретных машин, а не всю выборку заново. Раньше
+   * список молча игнорировался, и запрос на четыре лота ставил
+   * в очередь двести пятьдесят.
+   */
+  const explicit = Array.isArray(body.lotNumbers) ? body.lotNumbers : null;
+
+  const lots = explicit
+    ? explicit.map(lotNumber => ({ lotNumber: String(lotNumber) }))
+    : planPhotos(body).lots;
+
+  const queued = photoQueue.enqueue(lots, body.runId || null);
 
   console.log(`\n📥 Запрошен сбор фото: ${queued} лот(ов)`);
 
   res.json({
     success: true,
     queued,
-    minutesNeeded: plan.minutesNeeded,
+    minutesNeeded: explicit ? lots.length * 4 : planPhotos(body).minutesNeeded,
     totalPending: photoQueue.read().items.length,
   });
+});
+
+app.post("/api/photos/queue/clear", (req, res) => {
+  const removed = photoQueue.clear();
+
+  console.log(`\n🧹 Очередь сбора фото очищена: ${removed} лот(ов)`);
+
+  res.json({ success: true, removed });
 });
 
 /*
@@ -490,6 +523,20 @@ app.post("/api/photos/collect", (req, res) => {
  * сверить глазами. Без этого «ремонт $55 000» остаётся утверждением,
  * которое нечем проверить.
  */
+/*
+ * Состояние очереди объявлено ДО маршрута с номером лота: иначе
+ * Express считает слово «queue» номером лота и всегда отдаёт пустоту.
+ */
+app.get("/api/photos/queue", (req, res) => {
+  const runId = req.query.runId ? String(req.query.runId) : null;
+
+  res.json({
+    success: true,
+    ...photoQueue.stats(runId),
+    lastCollected: photoWorker.lastResult,
+  });
+});
+
 app.get("/api/photos/:lotNumber", (req, res) => {
   const lotNumber = String(req.params.lotNumber);
   const files = photoCollector.readPhotoDir(lotNumber);
@@ -529,16 +576,6 @@ app.get("/api/photos/:lotNumber/:index", async (req, res) => {
   }
 
   res.sendFile(file);
-});
-
-app.get("/api/photos/queue", (req, res) => {
-  const runId = req.query.runId ? String(req.query.runId) : null;
-
-  res.json({
-    success: true,
-    ...photoQueue.stats(runId),
-    lastCollected: photoWorker.lastResult,
-  });
 });
 
 app.get("/history", (req, res) => {
@@ -589,6 +626,40 @@ app.get("/api/history/summary", (req, res) => {
     success: true,
     ...history.buildSummary(),
   });
+});
+
+app.post("/api/history/market-reference", (req, res) => {
+  const { lotNumber, polandPriceUsd, belarusPriceUsd } = req.body || {};
+
+  if (!lotNumber) {
+    return res.status(400).json({ success: false, error: "lotNumber обязателен" });
+  }
+
+  const toNumber = (value) => {
+    const n = Number(value);
+
+    return Number.isFinite(n) && n > 0 ? n : undefined;
+  };
+
+  const updated = history.setMarketReference(lotNumber, {
+    polandPriceUsd: toNumber(polandPriceUsd),
+    belarusPriceUsd: toNumber(belarusPriceUsd),
+  });
+
+  if (updated === 0) {
+    return res.status(404).json({
+      success: false,
+      error: `Лот ${lotNumber} не найден в истории`,
+    });
+  }
+
+  console.log(
+    `\n📌 Цены аналогов: ${lotNumber}` +
+    (polandPriceUsd ? ` · Польша $${polandPriceUsd}` : "") +
+    (belarusPriceUsd ? ` · Беларусь $${belarusPriceUsd}` : "")
+  );
+
+  res.json({ success: true, updatedEntries: updated });
 });
 
 app.post("/api/history/actual", (req, res) => {

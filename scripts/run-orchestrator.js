@@ -1,6 +1,11 @@
-const Orchestrator = require("../src/orchestrator");
+const path = require("path");
 
-// Пример данных аукциона
+// Ключ берётся из окружения (.env), а не из кода: в репозитории
+// его быть не должно.
+require("dotenv").config();
+
+const Orchestrator = require(path.join(__dirname, "../src/orchestrator"));
+
 const mockAuction = [
   {
     id: 1,
@@ -35,28 +40,6 @@ const mockAuction = [
     описание: "Техническое обслуживание в порядке",
     целевой_регион: "Московская область",
   },
-  {
-    id: 4,
-    марка: "Toyota",
-    модель: "Camry",
-    год: 2014,
-    пробег: 200000,
-    текущая_цена: 350000,
-    состояние: "среднее",
-    описание: "Высокий пробег, требует диагностики",
-    целевой_регион: "Московская область",
-  },
-  {
-    id: 5,
-    марка: "Volkswagen",
-    модель: "Passat",
-    год: 2017,
-    пробег: 110000,
-    текущая_цена: 700000,
-    состояние: "хорошее",
-    описание: "Все опции работают, ухожено",
-    целевой_регион: "Санкт-Петербург",
-  },
 ];
 
 async function main() {
@@ -64,7 +47,6 @@ async function main() {
     const orchestrator = new Orchestrator();
     const results = await orchestrator.analyzeAuction(mockAuction);
 
-    // Сохраняем результаты в файл
     const timestamp = new Date().toISOString().replace(/:/g, "-");
     const outputFile = `analysis_${timestamp}.json`;
     require("fs").writeFileSync(outputFile, JSON.stringify(results, null, 2));

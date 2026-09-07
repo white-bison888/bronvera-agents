@@ -146,9 +146,25 @@ const stats = (runId = null) => {
   };
 };
 
+/*
+ * Полная очистка очереди. Сбор идёт по одному лоту в четыре минуты,
+ * поэтому случайно набранная очередь из сотен лотов занимает сутки —
+ * и её нужно уметь сбросить одним движением.
+ */
+const clear = () => {
+  const state = read();
+  const removed = state.items.length;
+
+  state.items = [];
+  write(state);
+
+  return removed;
+};
+
 module.exports = {
   QUEUE_FILE,
   enqueue,
+  clear,
   nextPending,
   markDone,
   markFailed,

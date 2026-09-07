@@ -1,6 +1,7 @@
 const fs = require("fs");
 const path = require("path");
 const { chromium } = require("playwright");
+const { inspectPhoto, MIN_FILE_BYTES } = require("../photos/quality");
 
 const PHOTO_URL_PATTERN = /https:\/\/images\.bid\.cars\/[^"'\s\\)]+\.jpg/g;
 
@@ -81,11 +82,29 @@ class LotPhotoCollector {
         continue;
       }
 
+      // Заглушка «изображение недоступно» приходит с кодом 200 и весит
+      // считанные килобайты — на диске от настоящего кадра её отличает
+      // только проверка.
+      const keepIfUsable = async () => {
+        const defect = await inspectPhoto(file);
+
+        if (defect) {
+          console.log(`   ${lotNumber}: кадр отброшен — ${defect}`);
+          fs.unlinkSync(file);
+
+          return false;
+        }
+
+        files.push(file);
+
+        return true;
+      };
+
       const body = intercepted.get(url);
 
       if (body) {
         fs.writeFileSync(file, body);
-        files.push(file);
+        await keepIfUsable();
         continue;
       }
 
@@ -99,7 +118,7 @@ class LotPhotoCollector {
           continue;
 
         fs.writeFileSync(file, await response.body());
-        files.push(file);
+        await keepIfUsable();
 
         await new Promise(resolve => setTimeout(resolve, 400));
       } catch {
@@ -146,12 +165,48 @@ class LotPhotoCollector {
 
         const file = path.join(lotDir, `shot-${files.length + 1}.jpg`);
 
-        if (fs.existsSync(file)) {
+        // Пустые кадры, снятые до этой проверки, лежат на диске
+        // с прошлых заходов — перезаписываем их, а не принимаем.
+        if (fs.existsSync(file) && !(await inspectPhoto(file))) {
           files.push(file);
           continue;
         }
 
+        /*
+         * Место в разметке элемент занимает сразу, а пиксели приходят
+         * позже. Снимок, сделанный в этом промежутке, — белый лист,
+         * поэтому ждём, пока картинка действительно загрузится.
+         */
+        const painted = await image.evaluate(node => new Promise((resolve) => {
+          if (node.complete && node.naturalWidth > 0)
+            return resolve(true);
+
+          const finish = () => resolve(node.naturalWidth > 0);
+
+          node.addEventListener("load", finish, { once: true });
+          node.addEventListener("error", () => resolve(false), { once: true });
+
+          setTimeout(finish, 8000);
+        }));
+
+        if (!painted)
+          continue;
+
+        // Браузеру нужен ещё кадр, чтобы вывести загруженную картинку
+        // на экран.
+        await page.waitForTimeout(250);
         await image.screenshot({ path: file, type: "jpeg", quality: 85 });
+
+        const defect = await inspectPhoto(file);
+
+        // Пустой кадр на диске опаснее отсутствия кадра: он выглядит
+        // как фотография и доходит до заключения.
+        if (defect) {
+          console.log(`   ${lotNumber}: кадр отброшен — ${defect}`);
+          fs.unlinkSync(file);
+          continue;
+        }
+
         files.push(file);
       } catch {
         // Элемент мог не отрисоваться — пропускаем и берём следующий.
@@ -175,7 +230,19 @@ class LotPhotoCollector {
       .readdirSync(lotDir)
       .filter(name => /\.(jpe?g|png|webp)$/i.test(name))
       .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }))
-      .map(name => path.join(lotDir, name));
+      .map(name => path.join(lotDir, name))
+      /*
+       * Пустой кадр весит пару килобайт. Если его не отсеять здесь,
+       * лот считается «уже собранным» и в очередь на пересбор
+       * никогда не вернётся.
+       */
+      .filter((file) => {
+        try {
+          return fs.statSync(file).size >= MIN_FILE_BYTES;
+        } catch {
+          return false;
+        }
+      });
   }
 
   async collect(lots = []) {

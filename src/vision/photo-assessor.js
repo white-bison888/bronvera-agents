@@ -1,6 +1,8 @@
 const fs = require("fs");
 const path = require("path");
 
+const { filterUsablePhotos } = require("../photos/quality");
+
 const API_URL = "https://api.anthropic.com/v1/messages";
 
 /*
@@ -22,9 +24,21 @@ const SYSTEM_PROMPT = `Ты — технический эксперт по ав�
 — для электромобилей отдельно отмечай риск для батареи и её корпуса;
 — срабатывание подушек безопасности отмечай, только если видно салон.
 
+ЕСЛИ СНИМКИ НЕПРИГОДНЫ
+
+Бывает, что вместо фотографии приходит пустой белый кадр, заглушка
+или снимок, на котором автомобиля не видно. В этом случае НЕ ПЫТАЙСЯ
+угадать повреждения. Верни ровно такой ответ:
+
+{ "photosUsable": false, "notes": "что именно не так со снимками" }
+
+Во всех остальных случаях ставь "photosUsable": true и заполняй
+полный ответ.
+
 Верни СТРОГО JSON без markdown и без текста вокруг:
 
 {
+  "photosUsable": true,
   "visibleDamage": ["перечень видимых повреждений"],
   "damageZones": ["front|rear|left|right|roof|underbody|interior"],
   "severity": "light|moderate|severe",
@@ -155,15 +169,24 @@ class PhotoAssessor {
   }
 
   async assessOne(lot, photoFiles) {
-    const selected = photoFiles
-      .filter(file => fs.existsSync(file))
-      .slice(0, this.maxPhotos);
+    const existing = photoFiles.filter(file => fs.existsSync(file));
+
+    /*
+     * Проверяем кадры до отправки: белый прямоугольник стоит столько же
+     * токенов, сколько настоящая фотография, а ответ по нему всё равно
+     * придётся отбросить.
+     */
+    const { usable, rejected } = await filterUsablePhotos(existing);
+    const selected = usable.slice(0, this.maxPhotos);
 
     if (selected.length === 0) {
       return {
         lotNumber: lot.lotNumber,
         available: false,
-        reason: "Фотографии лота отсутствуют",
+        reason: rejected.length > 0
+          ? `Снимки непригодны: ${rejected[0].reason}`
+          : "Фотографии лота отсутствуют",
+        rejectedPhotos: rejected.length,
       };
     }
 
@@ -233,10 +256,32 @@ class PhotoAssessor {
       };
     }
 
+    /*
+     * Ответ «ничего не видно» — это не оценка. Раньше такой ответ всё
+     * равно записывался как оценка, и в карточке появлялись «лёгкое
+     * повреждение» и «силовые элементы целы», которых никто не видел.
+     */
+    const unusable = parsed.photosUsable === false;
+    const noEstimate = !Number.isFinite(parsed.repairCostMin)
+      && !Number.isFinite(parsed.repairCostMax);
+
+    if (unusable || noEstimate) {
+      return {
+        lotNumber: lot.lotNumber,
+        available: false,
+        reason: unusable
+          ? `Модель не смогла разобрать снимки: ${parsed.notes || "содержимое не распознано"}`
+          : `Модель не смогла оценить ремонт по фото: ${parsed.notes || "недостаточно ракурсов"}`,
+        photosAnalyzed: selected.length,
+        rejectedPhotos: rejected.length,
+      };
+    }
+
     return {
       lotNumber: lot.lotNumber,
       available: true,
       photosAnalyzed: selected.length,
+      rejectedPhotos: rejected.length,
       ...parsed,
     };
   }
