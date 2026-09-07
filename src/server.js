@@ -11,6 +11,7 @@ const LotPhotoCollector = require("./providers/lot-photos");
 const PhotoAssessor = require("./vision/photo-assessor");
 const photoQueue = require("./photos/queue");
 const PhotoWorker = require("./photos/worker");
+const BidWatcher = require("./photos/bid-watcher");
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -27,6 +28,8 @@ const photoWorker = new PhotoWorker({
   photoCollector,
   photoAssessor,
 });
+
+const bidWatcher = new BidWatcher({ bidCars });
 
 app.get("/health", (req, res) => {
   res.json({
@@ -321,6 +324,102 @@ app.post("/api/photos/assess", async (req, res) => {
   }
 });
 
+/*
+ * Сколько машин попадает под запрос, у скольких уже есть снимки
+ * и сколько времени займёт добрать остальные. Нужно, чтобы решение
+ * о сборе принималось осознанно, а не вслепую.
+ */
+const planPhotos = (filters = {}) => {
+  const cache = bidCars.loadCache();
+  const seen = new Set();
+
+  const matching = [];
+
+  for (const bucket of Object.values(cache.buckets || {})) {
+    for (const vehicle of bucket.vehicles || []) {
+      const lot = String(vehicle.lotNumber || "");
+
+      if (!lot || seen.has(lot) || !vehicle.url)
+        continue;
+
+      seen.add(lot);
+
+      if (filters.make && !new RegExp(filters.make, "i").test(vehicle.make || ""))
+        continue;
+
+      if (filters.models?.length) {
+        const model = String(vehicle.model || "").toLowerCase();
+        const hit = filters.models.some(
+          m => model.includes(String(m).toLowerCase())
+        );
+
+        if (!hit)
+          continue;
+      }
+
+      if (filters.yearFrom && Number(vehicle.year) < filters.yearFrom)
+        continue;
+
+      if (filters.yearTo && Number(vehicle.year) > filters.yearTo)
+        continue;
+
+      if (filters.mileageMax && vehicle.mileage
+        && Number(vehicle.mileage) > filters.mileageMax)
+        continue;
+
+      if (filters.startCodes?.length) {
+        const code = bidCars.normalizeStartCode(vehicle.runAndDrive);
+
+        if (!filters.startCodes.includes(code))
+          continue;
+      }
+
+      matching.push(vehicle);
+    }
+  }
+
+  const withPhotos = matching.filter(
+    vehicle => photoCollector.readPhotoDir(vehicle.lotNumber).length > 0
+  );
+
+  const missing = matching.filter(
+    vehicle => photoCollector.readPhotoDir(vehicle.lotNumber).length === 0
+  );
+
+  // Сбор идёт по одному лоту раз в четыре минуты — иначе аукцион
+  // начинает отбивать запросы.
+  const minutesNeeded = missing.length * 4;
+
+  return {
+    matching: matching.length,
+    withPhotos: withPhotos.length,
+    missing: missing.length,
+    minutesNeeded,
+    trafficMb: Math.round(missing.length * 1.4),
+    lots: missing.map(vehicle => ({ lotNumber: vehicle.lotNumber })),
+  };
+};
+
+app.post("/api/photos/plan", (req, res) => {
+  const plan = planPhotos(req.body || {});
+
+  res.json({ success: true, ...plan, lots: undefined });
+});
+
+app.post("/api/photos/collect", (req, res) => {
+  const plan = planPhotos(req.body || {});
+  const queued = photoQueue.enqueue(plan.lots, (req.body || {}).runId || null);
+
+  console.log(`\n📥 Запрошен сбор фото: ${queued} лот(ов)`);
+
+  res.json({
+    success: true,
+    queued,
+    minutesNeeded: plan.minutesNeeded,
+    totalPending: photoQueue.read().items.length,
+  });
+});
+
 app.get("/api/photos/queue", (req, res) => {
   const runId = req.query.runId ? String(req.query.runId) : null;
 
@@ -403,4 +502,5 @@ app.listen(PORT, () => {
   );
 
   photoWorker.start();
+  bidWatcher.start();
 });
