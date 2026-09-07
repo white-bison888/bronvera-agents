@@ -31,6 +31,13 @@ const photoWorker = new PhotoWorker({
 
 const bidWatcher = new BidWatcher({ bidCars });
 
+/*
+ * Последний поиск помним, чтобы интерфейс мог показать покрытие
+ * фотографиями по текущему запросу, не зная сам о его критериях —
+ * их разбирает Dify, а не фронтенд.
+ */
+let lastSearch = null;
+
 app.get("/health", (req, res) => {
   res.json({
     status: "ok",
@@ -107,6 +114,13 @@ app.post("/api/cars/search", async (req, res) => {
       maxResults,
       maxPages,
     });
+
+    lastSearch = {
+      filters: { make, models, yearFrom, yearTo, mileageMin, mileageMax,
+        fuelTypes, bodyStyles, driveTypes, transmissions, startCodes, auctionTypes },
+      found: Array.isArray(result.listings) ? result.listings.length : 0,
+      at: new Date().toISOString(),
+    };
 
     res.json({
       success: true,
@@ -401,9 +415,20 @@ const planPhotos = (filters = {}) => {
 };
 
 app.post("/api/photos/plan", (req, res) => {
-  const plan = planPhotos(req.body || {});
+  const body = req.body || {};
+  const filters = Object.keys(body).length ? body : (lastSearch?.filters || {});
+  const plan = planPhotos(filters);
 
-  res.json({ success: true, ...plan, lots: undefined });
+  res.json({
+    success: true,
+    ...plan,
+    lots: undefined,
+    query: lastSearch,
+  });
+});
+
+app.get("/api/search/last", (req, res) => {
+  res.json({ success: true, lastSearch });
 });
 
 app.post("/api/photos/collect", (req, res) => {
@@ -442,10 +467,31 @@ app.get("/api/history", (req, res) => {
     ? entries.filter(entry => String(entry.lotNumber) === lot)
     : entries;
 
+  /*
+   * Дата торгов и ставка меняются после того, как запись создана:
+   * ставка растёт до закрытия, дату мы научились разбирать позже.
+   * Поэтому берём их из реестра, а не из момента анализа.
+   */
+  const enriched = filtered.map((entry) => {
+    const listing = bidCars.findByLotNumber(entry.lotNumber) || {};
+
+    return {
+      ...entry,
+      saleDate: listing.saleDate || entry.saleDate || null,
+      currentBidUsd: listing.currentBid ?? null,
+      bidCheckedAt: listing.bidCheckedAt || null,
+      auctionEstimateMin: listing.auctionEstimateMin ?? null,
+      auctionEstimateMax: listing.auctionEstimateMax ?? null,
+      mileage: listing.mileage ?? null,
+      primaryDamage: listing.primaryDamage || entry.primaryDamage || null,
+      photoCount: photoCollector.readPhotoDir(entry.lotNumber).length,
+    };
+  });
+
   res.json({
     success: true,
-    count: filtered.length,
-    entries: [...filtered].reverse(),
+    count: enriched.length,
+    entries: enriched.reverse(),
   });
 });
 
