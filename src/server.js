@@ -3,6 +3,7 @@ require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
 const path = require("path");
+const sharp = require("sharp");
 
 const BidCarsProvider = require("./providers/bidcars");
 const { calculateMaxBid } = require("./economics/max-bid");
@@ -443,6 +444,52 @@ app.post("/api/photos/collect", (req, res) => {
     minutesNeeded: plan.minutesNeeded,
     totalPending: photoQueue.read().items.length,
   });
+});
+
+/*
+ * Снимки и разбор по ним — рядом, чтобы вывод агента можно было
+ * сверить глазами. Без этого «ремонт $55 000» остаётся утверждением,
+ * которое нечем проверить.
+ */
+app.get("/api/photos/:lotNumber", (req, res) => {
+  const lotNumber = String(req.params.lotNumber);
+  const files = photoCollector.readPhotoDir(lotNumber);
+
+  res.json({
+    success: true,
+    lotNumber,
+    count: files.length,
+    photos: files.map((_, index) => index),
+    assessment: photoAssessor.getCached(lotNumber),
+  });
+});
+
+app.get("/api/photos/:lotNumber/:index", async (req, res) => {
+  const files = photoCollector.readPhotoDir(req.params.lotNumber);
+  const file = files[Number(req.params.index)];
+
+  if (!file)
+    return res.status(404).json({ success: false, error: "Снимок не найден" });
+
+  // Снимки экрана весят под мегабайт, а в ленте их девять на карточку.
+  // Для миниатюр отдаём уменьшенную копию — в шестьдесят раз легче.
+  if (req.query.thumb) {
+    try {
+      const thumb = await sharp(file)
+        .resize(320)
+        .jpeg({ quality: 72 })
+        .toBuffer();
+
+      res.set("Content-Type", "image/jpeg");
+      res.set("Cache-Control", "private, max-age=86400");
+
+      return res.send(thumb);
+    } catch (error) {
+      console.error("Миниатюра:", error.message);
+    }
+  }
+
+  res.sendFile(file);
 });
 
 app.get("/api/photos/queue", (req, res) => {
