@@ -26,6 +26,20 @@ const isRunAndDrive = normalizedStartCode =>
  */
 const NON_INSURANCE = /non-?\s?insurance/i;
 
+/*
+ * Продавцы, которые площадка не помечает как Non-insurance, хотя страховыми
+ * не являются: прокат и лизинг автопарков. Найдены в реальной выдаче —
+ * список пополняется по мере встречи, а не по догадке.
+ *
+ * Осторожно с похожими названиями: "New Jersey Manufacturing Group" — это
+ * NJM Insurance Group, настоящий страховщик, и в список он не входит.
+ */
+const NOT_INSURERS = [
+  /\bhertz\b/i,
+  // Пишут и "Wheels Inc", и "Wheels, Inc." — запятая не должна спасать.
+  /\bwheels\b[\s,.]*\binc\b/i,
+];
+
 // Площадка ставит "---" там, где продавец не указан. Это неизвестность,
 // а не подтверждение: без этой проверки такой лот проходил как страховой.
 const UNKNOWN_SELLER = /^-+$|^n\/a$|^unknown$/i;
@@ -34,6 +48,9 @@ const isInsuranceSeller = value => {
   const seller = String(value || "").trim();
 
   if (!seller || UNKNOWN_SELLER.test(seller))
+    return false;
+
+  if (NOT_INSURERS.some(pattern => pattern.test(seller)))
     return false;
 
   return !NON_INSURANCE.test(seller);
