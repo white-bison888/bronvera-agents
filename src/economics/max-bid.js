@@ -126,6 +126,8 @@ const calculateMaxBid = (vehicle, overrides = {}) => {
       lotNumber: vehicle.lotNumber || null,
       maxBidUsd: null,
       viable: false,
+      verdict: "NEEDS_MARKET_DATA",
+      photoStatus: hasPhotoAssessment(photo) ? "ok" : "skipped",
       reason: "Неизвестна рыночная стоимость автомобиля",
     };
   }
