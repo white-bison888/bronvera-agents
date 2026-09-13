@@ -168,6 +168,39 @@ class LotPhotoCollector {
   }
 
   /*
+   * Снимки лота приходят с images.bid.cars и по прямой ссылке отдают 403 —
+   * и через context.request, и при навигации: обе выглядят как запрос
+   * робота. А те же файлы браузер спокойно загружает, когда просит их как
+   * картинки на странице, с нужными заголовками и куками.
+   *
+   * Поэтому недостающие кадры не докачиваем, а подставляем странице тегом
+   * img: ответы поймает тот же перехватчик, что ловит остальные.
+   */
+  async warmMissingImages(page, urls) {
+    if (urls.length === 0)
+      return;
+
+    try {
+      await page.evaluate(async (list) => {
+        await Promise.all(list.map(src => new Promise((done) => {
+          const img = new Image();
+
+          img.onload = img.onerror = () => done();
+          img.src = src;
+
+          // Держим вне потока документа: страница не должна дёргаться.
+          img.style.position = "absolute";
+          img.style.left = "-9999px";
+
+          document.body.appendChild(img);
+        })));
+      }, urls);
+    } catch {
+      // Не вышло — останется запасной путь со снимком экрана.
+    }
+  }
+
+  /*
    * Сначала берём то, что браузер скачал сам при отрисовке страницы,
    * а недостающее догружаем по одному — из того же контекста, где уже
    * стоят куки Cloudflare. Пачкой качать нельзя: всплеск запросов
@@ -512,6 +545,14 @@ class LotPhotoCollector {
 
           if (details)
             this.details[key] = details;
+
+          // Часть кадров браузер грузит сам, часть — нет; добираем недостающие.
+          await this.warmMissingImages(
+            page,
+            urls.filter(url => !intercepted.has(url))
+          );
+
+          await page.waitForTimeout(3000);
 
           let files = await this.savePhotos(context, key, urls, intercepted);
 
