@@ -1508,6 +1508,18 @@ class BidCarsProvider {
             )
           );
 
+        /*
+         * Комплектация стоит в заголовке карточки после запятой и перед
+         * VIN: "2021 Tesla Model 3, Long Range Dual Motor 5YJ3E1EB...".
+         * В адресе лота её нет, поэтому берём отсюда — иначе запрос
+         * "Performance" ни на что не влияет и в рисках потом значится
+         * "комплектация не подтверждена".
+         */
+        const trimMatch =
+          text.match(
+            /,\s*([^,\n]{2,40}?)\s+[A-HJ-NPR-Z0-9]{17}\b/i
+          );
+
         const mileageMatch =
           text.match(
             /(?:Milage|Przebieg|Mileage|Odometer)\s*:?\s*([\d\s.,]+)\s*(k)?\s*(?:mi|mile|miles|mil)?/i
@@ -1577,6 +1589,24 @@ class BidCarsProvider {
               ? this.parseMoney(
                   bidMatch[1]
                 )
+              : null,
+
+          trim:
+            trimMatch
+              ? this.clean(
+                  trimMatch[1]
+                )
+              : null,
+
+          /*
+           * Площадка присылает заголовок уже обрезанным: в разметке лежит
+           * "Long Range Dual M...", полного названия нет ни в title, ни в
+           * адресе лота. По такому огрызку нельзя отсекать: за многоточием
+           * у "All-Wheel Drive/L..." вполне может стоять Performance.
+           */
+          trimTruncated:
+            trimMatch
+              ? /\u2026|\.\.\.$/.test(this.clean(trimMatch[1]))
               : null,
 
           currency:

@@ -124,9 +124,11 @@ class LotPhotoCollector {
 
   async extractLotDetails(page) {
     let text;
+    let title = "";
 
     try {
       text = await page.evaluate(() => document.body.innerText);
+      title = await page.evaluate(() => document.title);
     } catch {
       return null;
     }
@@ -143,6 +145,17 @@ class LotPhotoCollector {
       if (value)
         details[field] = value;
     }
+
+    /*
+     * Полная комплектация есть только здесь, в заголовке страницы:
+     * "2021 Tesla Model 3, Long Range Dual Motor All-Wheel Drive | VIN | BidCars".
+     * В карточке каталога она обрезана площадкой до "Long Range Dual M...",
+     * а VIN-декодер NHTSA для Tesla отдаёт пустой Trim.
+     */
+    const trimMatch = String(title).match(/^[^,|]+,\s*([^|]+?)\s*\|/);
+
+    if (trimMatch)
+      details.trim = trimMatch[1].trim();
 
     const timing = parseAuctionTiming(String(text || ""));
 
