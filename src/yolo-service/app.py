@@ -144,63 +144,49 @@ def assess_endpoint():
         data = request.get_json() or {}
         photos = data.get('photos', [])
         lot_number = data.get('lotNumber', 'unknown')
+        context = data.get('context', '')
 
         if not photos:
             return jsonify({
-                "success": False,
-                "error": "Не передано фото",
+                "available": False,
+                "reason": "Не передано фото",
                 "lotNumber": lot_number
             }), 400
 
-        image_bytes = []
-        for photo_data in photos:
-            image_bytes.append(
-                base64.b64decode(photo_data) if isinstance(photo_data, str) else photo_data)
+        image_bytes = [
+            base64.b64decode(p) if isinstance(p, str) else p for p in photos
+        ]
 
-        results = [assess_photo(raw, lot_number) for raw in image_bytes]
-
-        # Запускается всегда, а не только когда детектор что-то нашёл: машина
-        # без крыши не попадает ни в один его класс и даёт пустой результат.
-        vision_result = vision.analyze(image_bytes, lot_number)
+        detections = [assess_photo(raw, lot_number) for raw in image_bytes]
 
         totals = {}
-        for r in results:
+        for r in detections:
             for damage_type, count in r.get('damageSummary', {}).items():
                 totals[damage_type] = totals.get(damage_type, 0) + count
 
-        combined = {
-            "success": all(r.get('success', False) for r in results),
-            "lotNumber": lot_number,
-            "photosAnalyzed": len(photos),
-            "assessments": results,
-            "vision": vision_result,
-            "summary": {
-                "totalDamages": sum(r.get('totalDamages', 0) for r in results),
-                "damageTypes": totals,
-                "photosWithDamage": sum(1 for r in results if r.get('totalDamages')),
-                "maxConfidence": round(max((r.get('maxConfidence', 0.0) for r in results), default=0.0), 2),
-                "largestDamageShare": round(max((r.get('largestDamageShare', 0.0) for r in results), default=0.0), 4),
-                # ASSESSOR должен знать границы модели: отсутствие класса в
-                # detectableClasses означает «не проверялось», а не «дефекта нет».
-                "detectableClasses": sorted(model.names.values()) if model else [],
-                "detectorBlindSpots": [
-                    "ржавчина и коррозия",
-                    "отсутствующие детали и сорванные панели",
-                    "состояние силовой структуры",
-                    "срабатывание подушек безопасности",
-                    "следы огня и затопления",
-                ],
-                "confidenceThreshold": CONF_THRESHOLD,
-            }
+        detector = {
+            "totalDamages": sum(r.get('totalDamages', 0) for r in detections),
+            "damageTypes": totals,
+            "largestDamageShare": round(
+                max((r.get('largestDamageShare', 0.0) for r in detections), default=0.0), 4),
+            "perPhoto": detections,
+            "detectableClasses": sorted(model.names.values()) if model else [],
+            "confidenceThreshold": CONF_THRESHOLD,
         }
 
-        return jsonify(combined), 200
+        # Разбор идёт всегда, а не только когда детектор что-то нашёл: машина
+        # без крыши не попадает ни в один его класс и даёт пустой результат.
+        result = vision.analyze(image_bytes, lot_number, context)
+        result["lotNumber"] = lot_number
+        result["detector"] = detector
+
+        return jsonify(result), 200
 
     except Exception as e:
         logger.error(f"❌ Ошибка в endpoint: {e}")
         return jsonify({
-            "success": False,
-            "error": str(e)
+            "available": False,
+            "reason": str(e)
         }), 500
 
 @app.route('/health', methods=['GET'])

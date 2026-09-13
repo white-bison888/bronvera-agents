@@ -89,7 +89,13 @@ class PhotoWorker {
     if (this.running)
       return;
 
-    const item = queue.nextPending();
+    let item;
+    try {
+      item = queue.nextPending();
+    } catch {
+      console.error("Очередь недоступна: обработка приостановлена, данные сохранены");
+      return;
+    }
 
     if (!item)
       return;
@@ -147,6 +153,24 @@ class PhotoWorker {
 
     const assessment = assessments[0];
 
+    if (assessment?.deferred) {
+      const until = queue.markDeferred(lotNumber, assessment.reason);
+
+      console.log(
+        `   ${lotNumber}: суточный лимит разбора исчерпан, вернёмся ` +
+        `${until ? new Date(until).toLocaleString("ru") : "завтра"}`
+      );
+
+      return;
+    }
+
+    if (!assessment?.available) {
+      queue.markFailed(lotNumber, assessment?.reason || "Оценка фотографий не получена");
+      return;
+    }
+
+    // Удаляем задачу только после успешной оценки и сохранения истории.
+    this.refreshHistory(lotNumber, assessment);
     queue.markDone(lotNumber, files.length);
 
     console.log(
@@ -160,7 +184,6 @@ class PhotoWorker {
       at: new Date().toISOString(),
     };
 
-    this.refreshHistory(lotNumber, assessment);
   }
 
   /*
@@ -221,9 +244,9 @@ class PhotoWorker {
         marketReference: latest.marketReference || null,
         // Вердикт, который придержали до появления снимков, теперь
         // подтверждён разбором фотографий и возвращается в карточку.
-        decision: latest.decision === "PENDING_PHOTOS"
+        decision: result.verdict || (latest.decision === "PENDING_PHOTOS"
           ? latest.decisionHeld || null
-          : latest.decision,
+          : latest.decision),
         finalScore: latest.finalScore,
         confidence: latest.confidence,
         refinedByPhotos: true,

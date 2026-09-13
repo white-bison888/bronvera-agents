@@ -5,127 +5,31 @@ const path = require("path");
 
 const { filterUsablePhotos } = require("../photos/quality");
 
-const API_URL = "https://api.anthropic.com/v1/messages";
-
 /*
- * Оценку по фотографиям делает отдельная дешёвая модель: задача здесь
- * узкая — разглядеть характер удара, а не рассуждать об экономике.
+ * Разбор снимков вынесен в отдельный сервис: он держит ключ поставщика,
+ * следит за суточным лимитом и сам выбирает модель. Промпт живёт там же —
+ * двух копий быть не должно, они разойдутся.
  */
-const MODEL = "claude-haiku-4-5-20251001";
+const API_URL = process.env.PHOTO_ASSESS_URL
+  || "http://localhost:3002/api/photos/assess";
 
-const SYSTEM_PROMPT = `Ты — технический эксперт по аварийным автомобилям с аукционов США.
-
-Тебе показывают фотографии одного лота. Оцени повреждения ТОЛЬКО по тому,
-что реально видно на снимках.
-
-Правила:
-— не выдумывай повреждения, которых не видно;
-— если ракурсов не хватает, честно снижай уверенность;
-— различай косметику (бампер, крыло, оптика) и силовые элементы
-  (лонжероны, стойки, порог, подрамник, крыша);
-— для электромобилей отдельно отмечай риск для батареи и её корпуса;
-— срабатывание подушек безопасности отмечай, только если видно салон.
-
-ЕСЛИ СНИМКИ НЕПРИГОДНЫ
-
-Бывает, что вместо фотографии приходит пустой белый кадр, заглушка
-или снимок, на котором автомобиля не видно. В этом случае НЕ ПЫТАЙСЯ
-угадать повреждения. Верни ровно такой ответ:
-
-{ "photosUsable": false, "notes": "что именно не так со снимками" }
-
-Во всех остальных случаях ставь "photosUsable": true и заполняй
-полный ответ.
-
-Верни СТРОГО JSON без markdown и без текста вокруг:
-
-{
-  "photosUsable": true,
-  "visibleDamage": ["перечень видимых повреждений"],
-  "damageZones": ["front|rear|left|right|roof|underbody|interior"],
-  "severity": "light|moderate|severe",
-  "structuralConcern": true,
-  "airbagsDeployed": true,
-  "batteryAreaAffected": true,
-  "repairPlan": [
-    {
-      "work": "что именно делать",
-      "partsUsd": 0,
-      "laborUsd": 0,
-      "note": "почему это нужно — что видно на снимке"
-    }
-  ],
-  "repairCostMin": 0,
-  "repairCostMax": 0,
-  "confidence": "high|medium|low",
-  "notes": "краткий вывод одной-двумя фразами"
-}
-
-ГДЕ И ПО КАКИМ ЦЕНАМ СЧИТАТЬ РЕМОНТ
-
-Автомобиль покупается на аукционе США и восстанавливается в Польше,
-поэтому считай так:
-
-— ЗАПЧАСТИ по ценам мирового рынка в долларах. Для Tesla учитывай,
-  что оригинальные кузовные детали дороги, а на распространённые модели
-  есть неоригинал и разборка;
-
-— РАБОТА по польским ставкам: примерно 25-40 USD за нормо-час
-  в обычном сервисе, 50-70 USD в специализированном по электромобилям.
-  Это в два-три раза дешевле американских ставок — не считай по США;
-
-— покраска элемента в Польше обычно 120-250 USD за деталь;
-
-— работы с высоковольтной батареей и её корпусом считай по ставкам
-  специализированного сервиса.
-
-repairPlan — перечень конкретных работ. По каждой строке указывай
-стоимость запчастей и работы отдельно, чтобы оценку можно было
-проверить и оспорить. Не пиши общие фразы вроде «кузовной ремонт» —
-называй узлы: бампер, крыло, лонжерон, стойка, дверь, порог.
-
-repairCostMin и repairCostMax — итоговый диапазон по всем работам
-из repairPlan, в долларах. Минимум считай при благоприятном сценарии
-(скрытых повреждений нет, детали с разборки), максимум — при
-неблагоприятном (нужны новые оригинальные детали, повреждения глубже).
-
-Если повреждение лёгкое и хорошо видно, диапазон обязателен.
-Ставь null только когда снимков действительно не хватает даже
-для грубой оценки — но тогда объясни в notes, чего именно не видно.
-
-airbagsDeployed и batteryAreaAffected ставь null, если по фото не определить.
-
-Тексты в visibleDamage, repairPlan и notes пиши по-русски.`;
-
-// Снимки экрана сохраняются в PNG, скачанные с аукциона — в JPEG.
-// Неверно указанный тип API отвергает.
-const mediaTypeFor = (file) => {
-  const extension = path.extname(file).toLowerCase();
-
-  if (extension === ".png")
-    return "image/png";
-
-  if (extension === ".webp")
-    return "image/webp";
-
-  return "image/jpeg";
-};
-
+// Версия нужна, чтобы сбросить кэш, когда в сервисе меняется разбор.
+const CACHE_VERSION = process.env.PHOTO_ASSESS_VERSION || "vision-service-1";
 
 class PhotoAssessor {
   constructor(options = {}) {
-    this.apiKey = options.apiKey || process.env.ANTHROPIC_API_KEY || "";
-
     this.cacheFile =
       options.cacheFile ||
       path.join(process.cwd(), "data", "photo-assessments-cache.json");
 
-    // Больше шести ракурсов почти не добавляют информации,
-    // а стоимость растёт линейно.
-    this.maxPhotos = options.maxPhotos || 6;
+    /*
+     * Смотрим все снимки лота. Ограничение в шесть ракурсов ставили ради
+     * экономии на платной модели, но сорванная крыша может оказаться
+     * ровно на седьмом кадре, а лот при этом пройдёт как целый.
+     */
+    this.maxPhotos = options.maxPhotos || 0;
 
-    this.model = options.model || MODEL;
-    this.cacheVersion = createHash("sha256").update(this.model + SYSTEM_PROMPT + this.maxPhotos).digest("hex");
+    this.cacheVersion = CACHE_VERSION;
     this.concurrency = 2;
   }
 
@@ -157,21 +61,6 @@ class PhotoAssessor {
     return entry?.version === this.cacheVersion ? entry.assessment : null;
   }
 
-  parseAssessment(text) {
-    const raw = String(text || "").trim();
-    const start = raw.indexOf("{");
-    const end = raw.lastIndexOf("}");
-
-    if (start === -1 || end === -1 || end <= start)
-      return null;
-
-    try {
-      return JSON.parse(raw.slice(start, end + 1));
-    } catch {
-      return null;
-    }
-  }
-
   async assessOne(lot, photoFiles) {
     const existing = photoFiles.filter(file => fs.existsSync(file));
 
@@ -181,7 +70,7 @@ class PhotoAssessor {
      * придётся отбросить.
      */
     const { usable, rejected } = await filterUsablePhotos(existing);
-    const selected = usable.slice(0, this.maxPhotos);
+    const selected = this.maxPhotos > 0 ? usable.slice(0, this.maxPhotos) : usable;
 
     if (selected.length === 0) {
       return {
@@ -204,82 +93,69 @@ class PhotoAssessor {
       .filter(Boolean)
       .join(", ");
 
-    const content = [
-      ...selected.map(file => ({
-        type: "image",
-        source: {
-          type: "base64",
-          media_type: mediaTypeFor(file),
-          data: fs.readFileSync(file).toString("base64"),
-        },
-      })),
-      {
-        type: "text",
-        text: `Автомобиль: ${context}. Оцени повреждения по фотографиям.`,
-      },
-    ];
+    const payload = await measuredCall(
+      { component: "vision", lotNumber: String(lot.lotNumber), model: "vision-service" },
+      async () => {
+        const response = await fetch(API_URL, {
+          // Все снимки лота уходят одним запросом, ответ идёт от внешней
+          // модели через сервис — на десятке кадров минуты полторы нормально.
+          signal: AbortSignal.timeout(300000),
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            lotNumber: String(lot.lotNumber),
+            context: `Автомобиль: ${context}. Оцени повреждения по фотографиям.`,
+            photos: selected.map(file => fs.readFileSync(file).toString("base64")),
+          }),
+        });
 
-    const payload = await measuredCall({ component: "vision", lotNumber: String(lot.lotNumber), model: this.model }, async () => {
-      const response = await fetch(API_URL, {
-        signal: AbortSignal.timeout(90000),
-        method: "POST",
-        headers: {
-          "x-api-key": this.apiKey,
-          "anthropic-version": "2023-06-01",
-          "content-type": "application/json",
-        },
-        body: JSON.stringify({
-          model: this.model,
-          // Перечень работ длиннее прежнего ответа: при 1200 он обрывался
-          // на середине, и разбор JSON падал.
-          max_tokens: 4000,
-          system: SYSTEM_PROMPT,
-          messages: [{ role: "user", content }],
-        }),
+        const body = await response.json().catch(() => null);
+
+        if (!response.ok && !body) {
+          throw new Error(`Сервис оценки фото ${response.status}`);
+        }
+
+        return body;
       });
 
-      if (!response.ok) {
-        const detail = await response.text();
-
-        throw new Error(
-          `Anthropic ${response.status}: ${detail.slice(0, 200)}`
-        );
-      }
-
-      return response.json();
-    });
-    const text = (payload.content || [])
-      .filter(block => block.type === "text")
-      .map(block => block.text)
-      .join("");
-
-    const parsed = this.parseAssessment(text);
-
-    if (!parsed) {
+    /*
+     * Лимит на сегодня исчерпан — это не «повреждений нет». Лот остаётся
+     * в очереди и будет разобран, когда лимит обновится.
+     */
+    if (payload?.deferred) {
       return {
         lotNumber: lot.lotNumber,
         available: false,
-        reason: "Модель вернула неразборчивый ответ",
+        deferred: true,
+        reason: payload.reason || "Разбор фотографий перенесён на следующий день",
       };
     }
+
+    if (!payload?.available) {
+      return {
+        lotNumber: lot.lotNumber,
+        available: false,
+        reason: payload?.reason || "Оценка по фотографиям не получена",
+        rejectedPhotos: rejected.length,
+      };
+    }
+
+    const parsed = payload.assessment || {};
 
     /*
      * Ответ «ничего не видно» — это не оценка. Раньше такой ответ всё
      * равно записывался как оценка, и в карточке появлялись «лёгкое
      * повреждение» и «силовые элементы целы», которых никто не видел.
      */
-    const unusable = parsed.photosUsable === false;
     const noEstimate = !Number.isFinite(parsed.repairCostMin)
       && !Number.isFinite(parsed.repairCostMax);
 
-    if (unusable || noEstimate) {
+    if (noEstimate) {
       return {
         lotNumber: lot.lotNumber,
         available: false,
-        reason: unusable
-          ? `Модель не смогла разобрать снимки: ${parsed.notes || "содержимое не распознано"}`
-          : `Модель не смогла оценить ремонт по фото: ${parsed.notes || "недостаточно ракурсов"}`,
-        photosAnalyzed: selected.length,
+        reason: `Модель не смогла оценить ремонт по фото: ${parsed.notes || "недостаточно ракурсов"}`,
+        photosAnalyzed: payload.photosAnalyzed ?? selected.length,
         rejectedPhotos: rejected.length,
       };
     }
@@ -287,8 +163,10 @@ class PhotoAssessor {
     return {
       lotNumber: lot.lotNumber,
       available: true,
-      photosAnalyzed: selected.length,
+      photosAnalyzed: payload.photosAnalyzed ?? selected.length,
       rejectedPhotos: rejected.length,
+      visionModel: payload.model || null,
+      detector: payload.detector || null,
       ...parsed,
     };
   }
@@ -298,9 +176,6 @@ class PhotoAssessor {
   }
 
   async assessRun(lots, photosByLot) {
-    if (!this.apiKey)
-      throw new Error("ANTHROPIC_API_KEY не задан");
-
     const cache = this.loadCache();
     const updates = {};
     let fromCache = 0;

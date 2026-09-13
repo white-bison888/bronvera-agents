@@ -17,11 +17,13 @@ const read = () => {
 
     const parsed = JSON.parse(fs.readFileSync(QUEUE_FILE, "utf8"));
 
-    return { items: Array.isArray(parsed.items) ? parsed.items : [] };
+    if (!Array.isArray(parsed.items))
+      throw new Error("Invalid queue format");
+    return { items: parsed.items };
   } catch (error) {
     console.error("Photo queue read error:", error.message);
 
-    return { items: [] };
+    throw error;
   }
 };
 
@@ -43,8 +45,20 @@ const enqueue = (lots = [], runId = null) => {
   for (const lot of lots) {
     const key = String(lot.lotNumber || lot);
 
-    if (!key || known.has(key))
+    if (!key)
       continue;
+    if (known.has(key)) {
+      const existing = state.items.find(item => String(item.lotNumber) === key);
+      if (existing.status === "failed") {
+        existing.status = "pending";
+        existing.attempts = 0;
+        existing.lastAttemptAt = null;
+        existing.lastError = null;
+        existing.runId = runId;
+        added += 1;
+      }
+      continue;
+    }
 
     state.items.push({
       lotNumber: key,
@@ -77,6 +91,8 @@ const nextPending = (backoffBaseMs = 60000) => {
 
   const ready = state.items
     .filter(item => item.status === "pending")
+    // Лот, отложенный до обновления суточного лимита, трогать рано.
+    .filter(item => !item.deferredUntil || now >= new Date(item.deferredUntil).getTime())
     .filter((item) => {
       if (!item.lastAttemptAt)
         return true;
@@ -110,6 +126,33 @@ const markDone = (lotNumber, photoCount) => {
   return photoCount;
 };
 
+/*
+ * Исчерпанный суточный лимит — не отказ. Счётчик попыток не трогаем:
+ * иначе лот, отложенный утром, за час выберет все пять попыток и будет
+ * похоронен со статусом failed, так и не дождавшись обновления лимита.
+ */
+const markDeferred = (lotNumber, reason) => {
+  const state = read();
+  const target = String(lotNumber);
+
+  const item = state.items.find(
+    entry => String(entry.lotNumber) === target,
+  );
+
+  if (!item)
+    return;
+
+  const tomorrow = new Date();
+  tomorrow.setHours(24, 5, 0, 0);
+
+  item.lastError = reason;
+  item.deferredUntil = tomorrow.toISOString();
+
+  write(state);
+
+  return item.deferredUntil;
+};
+
 const markFailed = (lotNumber, reason) => {
   const state = read();
   const target = String(lotNumber);
@@ -124,6 +167,8 @@ const markFailed = (lotNumber, reason) => {
   item.attempts += 1;
   item.lastAttemptAt = new Date().toISOString();
   item.lastError = reason;
+  if (item.attempts >= 5)
+    item.status = "failed";
 
   write(state);
 };
@@ -136,10 +181,12 @@ const stats = (runId = null) => {
     : state.items;
 
   return {
-    pending: items.length,
-    totalPending: state.items.length,
+    pending: items.filter(item => item.status === "pending").length,
+    totalPending: state.items.filter(item => item.status === "pending").length,
+    failed: items.filter(item => item.status === "failed").length,
     items: items.map(item => ({
       lotNumber: item.lotNumber,
+      status: item.status,
       attempts: item.attempts,
       lastError: item.lastError,
     })),
@@ -167,6 +214,7 @@ module.exports = {
   clear,
   nextPending,
   markDone,
+  markDeferred,
   markFailed,
   stats,
   read,
