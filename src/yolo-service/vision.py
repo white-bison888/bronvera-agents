@@ -7,19 +7,70 @@ YOLO отвечает на вопрос «есть ли на снимке зна
 Поставщик выбирается переменной VISION_PROVIDER: gemini или gigachat.
 """
 
+import datetime
 import json
 import logging
 import os
 import re
 import tempfile
+import threading
+import time
 
 logger = logging.getLogger(__name__)
+
+RETRY_ATTEMPTS = int(os.getenv('VISION_RETRY_ATTEMPTS', '4'))
+# Бесплатный лимит Gemini регулярно отвечает 503 «высокая нагрузка».
+TRANSIENT = ('503', '429', 'UNAVAILABLE', 'RESOURCE_EXHAUSTED', 'timeout', 'DEADLINE')
+
+# Ограничители на нашей стороне. Держим ниже тарифных потолков (15 в минуту,
+# 500 в сутки у Flash Lite), чтобы упираться в свой предел, а не ловить отказы.
+RPM_LIMIT = int(os.getenv('VISION_RPM_LIMIT', '12'))
+DAILY_LIMIT = int(os.getenv('VISION_DAILY_LIMIT', '450'))
+
+_throttle = threading.Lock()
+_last_call = 0.0
+_day = None
+_spent_today = 0
+
+
+class BudgetExhausted(Exception):
+    pass
+
+
+def _reserve_slot():
+    """Держит темп запросов и суточный расход в заданных рамках."""
+    global _last_call, _day, _spent_today
+
+    with _throttle:
+        today = datetime.date.today()
+        if today != _day:
+            _day, _spent_today = today, 0
+
+        if _spent_today >= DAILY_LIMIT:
+            raise BudgetExhausted(
+                f"суточный лимит исчерпан: {_spent_today} из {DAILY_LIMIT}")
+
+        wait = (_last_call + 60.0 / RPM_LIMIT) - time.monotonic()
+        if wait > 0:
+            time.sleep(wait)
+
+        _last_call = time.monotonic()
+        _spent_today += 1
+
+
+def budget_status():
+    with _throttle:
+        used = _spent_today if datetime.date.today() == _day else 0
+    return {"usedToday": used, "dailyLimit": DAILY_LIMIT, "rpmLimit": RPM_LIMIT}
 
 PROVIDER = os.getenv('VISION_PROVIDER', 'gemini').lower()
 MAX_PHOTOS = int(os.getenv('VISION_MAX_PHOTOS', '4'))
 
 GEMINI_KEY = os.getenv('GEMINI_API_KEY', '')
-GEMINI_MODEL = os.getenv('GEMINI_MODEL', 'gemini-2.5-flash')
+# Lite основная не по качеству, а по суточному лимиту бесплатного тарифа:
+# у Flash это 20 запросов в день, у Lite — 500. Flash остаётся запасной.
+GEMINI_MODEL = os.getenv('GEMINI_MODEL', 'gemini-flash-lite-latest')
+GEMINI_FALLBACK = os.getenv('GEMINI_FALLBACK_MODEL', 'gemini-flash-latest')
 
 GIGACHAT_CREDENTIALS = os.getenv('GIGACHAT_CREDENTIALS', '')
 GIGACHAT_MODEL = os.getenv('GIGACHAT_MODEL', 'GigaChat-2-Max')
@@ -54,6 +105,23 @@ null означает «на этом снимке не определить». 
 отсутствие обзора и отсутствие повреждения — разные вещи."""
 
 
+def _with_retry(call, label):
+    delay = 2
+    for attempt in range(1, RETRY_ATTEMPTS + 1):
+        try:
+            return call()
+        except Exception as exc:
+            message = str(exc)
+            transient = any(marker in message for marker in TRANSIENT)
+            if not transient or attempt == RETRY_ATTEMPTS:
+                raise
+            logger.warning(
+                f"{label}: попытка {attempt} из {RETRY_ATTEMPTS} не удалась, "
+                f"жду {delay}с — {message[:120]}")
+            time.sleep(delay)
+            delay *= 2
+
+
 def _extract_json(text):
     """Модель иногда оборачивает ответ в ```json ... ``` или добавляет текст."""
     match = re.search(r'\{.*\}', text, re.DOTALL)
@@ -72,20 +140,37 @@ def _gemini_call(images):
         response_mime_type="application/json",
     )
 
+    models = [m for m in (GEMINI_MODEL, GEMINI_FALLBACK) if m]
+
     out = []
     for index, raw in enumerate(images):
-        try:
-            response = client.models.generate_content(
-                model=GEMINI_MODEL,
-                contents=[types.Part.from_bytes(data=raw, mime_type="image/jpeg"), PROMPT],
-                config=config,
-            )
-            payload = _extract_json(response.text)
-            payload["photoIndex"] = index
-            out.append(payload)
-        except Exception as exc:
-            logger.error(f"Gemini, фото {index}: {exc}")
-            out.append({"photoIndex": index, "error": str(exc)})
+        part = types.Part.from_bytes(data=raw, mime_type="image/jpeg")
+        last_error = None
+
+        for model_name in models:
+            try:
+                def attempt(m=model_name):
+                    _reserve_slot()
+                    return client.models.generate_content(
+                        model=m, contents=[part, PROMPT], config=config)
+
+                response = _with_retry(attempt, f"Gemini {model_name}, фото {index}")
+                payload = _extract_json(response.text)
+                payload["photoIndex"] = index
+                payload["model"] = model_name
+                out.append(payload)
+                break
+            except BudgetExhausted as exc:
+                # Запасная модель тратит тот же бюджет — перебирать смысла нет.
+                logger.warning(f"Gemini, фото {index}: {exc}")
+                out.append({"photoIndex": index, "error": str(exc)})
+                return out
+            except Exception as exc:
+                last_error = exc
+                logger.error(f"Gemini {model_name}, фото {index}: {exc}")
+        else:
+            out.append({"photoIndex": index, "error": str(last_error)})
+
     return out
 
 

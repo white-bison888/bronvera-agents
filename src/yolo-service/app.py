@@ -211,6 +211,7 @@ def health():
         "yolo_loaded": model is not None,
         "model": MODEL_PATH,
         "classes": sorted(model.names.values()) if model else [],
+        "visionBudget": vision.budget_status(),
         "service": "YOLO Photo Assessor v1.0"
     }), 200
 
