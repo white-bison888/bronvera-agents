@@ -1,4 +1,6 @@
+const { measuredCall, measureRun } = require("../observability/usage");
 const fs = require("fs");
+const { createHash } = require("node:crypto");
 const path = require("path");
 
 const { filterUsablePhotos } = require("../photos/quality");
@@ -123,6 +125,8 @@ class PhotoAssessor {
     this.maxPhotos = options.maxPhotos || 6;
 
     this.model = options.model || MODEL;
+    this.cacheVersion = createHash("sha256").update(this.model + SYSTEM_PROMPT + this.maxPhotos).digest("hex");
+    this.concurrency = 2;
   }
 
   loadCache() {
@@ -150,7 +154,7 @@ class PhotoAssessor {
   getCached(lotNumber) {
     const entry = this.loadCache()[String(lotNumber)];
 
-    return entry ? entry.assessment : null;
+    return entry?.version === this.cacheVersion ? entry.assessment : null;
   }
 
   parseAssessment(text) {
@@ -215,32 +219,35 @@ class PhotoAssessor {
       },
     ];
 
-    const response = await fetch(API_URL, {
-      method: "POST",
-      headers: {
-        "x-api-key": this.apiKey,
-        "anthropic-version": "2023-06-01",
-        "content-type": "application/json",
-      },
-      body: JSON.stringify({
-        model: this.model,
-        // Перечень работ длиннее прежнего ответа: при 1200 он обрывался
-        // на середине, и разбор JSON падал.
-        max_tokens: 4000,
-        system: SYSTEM_PROMPT,
-        messages: [{ role: "user", content }],
-      }),
+    const payload = await measuredCall({ component: "vision", lotNumber: String(lot.lotNumber), model: this.model }, async () => {
+      const response = await fetch(API_URL, {
+        signal: AbortSignal.timeout(90000),
+        method: "POST",
+        headers: {
+          "x-api-key": this.apiKey,
+          "anthropic-version": "2023-06-01",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          model: this.model,
+          // Перечень работ длиннее прежнего ответа: при 1200 он обрывался
+          // на середине, и разбор JSON падал.
+          max_tokens: 4000,
+          system: SYSTEM_PROMPT,
+          messages: [{ role: "user", content }],
+        }),
+      });
+
+      if (!response.ok) {
+        const detail = await response.text();
+
+        throw new Error(
+          `Anthropic ${response.status}: ${detail.slice(0, 200)}`
+        );
+      }
+
+      return response.json();
     });
-
-    if (!response.ok) {
-      const detail = await response.text();
-
-      throw new Error(
-        `Anthropic ${response.status}: ${detail.slice(0, 200)}`
-      );
-    }
-
-    const payload = await response.json();
     const text = (payload.content || [])
       .filter(block => block.type === "text")
       .map(block => block.text)
@@ -287,57 +294,74 @@ class PhotoAssessor {
   }
 
   async assess(lots, photosByLot) {
+    return measureRun("photo-assessment", () => this.assessRun(lots, photosByLot));
+  }
+
+  async assessRun(lots, photosByLot) {
     if (!this.apiKey)
       throw new Error("ANTHROPIC_API_KEY не задан");
 
     const cache = this.loadCache();
+    const updates = {};
     let fromCache = 0;
     let analyzed = 0;
 
     // Лоты разбираем параллельно: запросы идут к разным изображениям
     // и друг друга не ждут, а последовательный разбор пяти машин
     // не укладывался в тайм-аут вызывающего узла.
-    const results = await Promise.all(
-      lots.map(async (lot) => {
-        const key = String(lot.lotNumber);
+    const results = [];
+    for (let offset = 0; offset < lots.length; offset += this.concurrency) {
+      const batch = await Promise.all(
+        lots.slice(offset, offset + this.concurrency).map(async (lot) => {
+          const key = String(lot.lotNumber);
 
-        if (cache[key]) {
-          fromCache += 1;
+          const fingerprint = createHash("sha256");
+          for (const file of photosByLot[key] || []) {
+            if (fs.existsSync(file)) fingerprint.update(fs.readFileSync(file));
+          }
+          fingerprint.update(JSON.stringify([lot.year, lot.make, lot.model, lot.primaryDamage, lot.fuelType]));
+          const photoHash = fingerprint.digest("hex");
+          if (cache[key]?.version === this.cacheVersion && cache[key]?.photoHash === photoHash) {
+            fromCache += 1;
 
-          return cache[key].assessment;
-        }
-
-        try {
-          const assessment = await this.assessOne(
-            lot,
-            photosByLot[key] || []
-          );
-
-          // Отсутствие фотографий не кэшируем: снимки могут появиться позже.
-          if (assessment.available) {
-            cache[key] = {
-              assessment,
-              assessedAt: new Date().toISOString(),
-            };
-
-            analyzed += 1;
+            return cache[key].assessment;
           }
 
-          return assessment;
-        } catch (error) {
-          console.error(`   ${key}: ошибка оценки — ${error.message}`);
+          try {
+            const assessment = await this.assessOne(
+              lot,
+              photosByLot[key] || []
+            );
 
-          return {
-            lotNumber: lot.lotNumber,
-            available: false,
-            reason: `Ошибка оценки: ${error.message}`,
-          };
-        }
-      })
-    );
+            // Отсутствие фотографий не кэшируем: снимки могут появиться позже.
+            if (assessment.available) {
+              updates[key] = {
+                assessment,
+                version: this.cacheVersion,
+                photoHash,
+                assessedAt: new Date().toISOString(),
+              };
 
+              analyzed += 1;
+            }
+
+            return assessment;
+          } catch (error) {
+            console.error(`   ${key}: ошибка оценки — ${error.message}`);
+
+            return {
+              lotNumber: lot.lotNumber,
+              available: false,
+              reason: `Ошибка оценки: ${error.message}`,
+            };
+          }
+        })
+      );
+
+      results.push(...batch);
+    }
     if (analyzed > 0)
-      this.saveCache(cache);
+      this.saveCache({ ...this.loadCache(), ...updates });
 
     console.log(
       `🔍 Оценка по фото: из кэша ${fromCache}, разобрано ${analyzed}`
