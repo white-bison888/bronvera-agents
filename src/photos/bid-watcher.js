@@ -1,5 +1,6 @@
 const { chromium } = require("playwright");
 const history = require("../history/store");
+const { parseAuctionTiming } = require("../providers/auction-timing");
 
 /*
  * Ставка на аукционе живёт своей жизнью: в момент анализа она может быть
@@ -10,10 +11,19 @@ const history = require("../history/store");
  * чем ближе торги — далёкие проверять незачем, это трафик впустую.
  */
 const checkInterval = (msToClose) => {
-  if (msToClose <= 0)
-    return null;
-
   const hours = msToClose / 3600000;
+
+  /*
+   * Дата закрытия сохраняется в момент разбора и устаревает: площадка
+   * переносит торги и перевыставляет лоты. Если просто перестать смотреть
+   * на прошедшие, лот с устаревшей датой замирает навсегда — поправить её
+   * станет некому, и в карточке вечно висит «торги прошли».
+   *
+   * Поэтому ещё трое суток заглядываем: там либо появится новая дата,
+   * либо торги действительно состоялись и лот можно закрывать.
+   */
+  if (hours <= 0)
+    return hours > -72 ? 6 * 3600 * 1000 : null;
 
   if (hours <= 1)
     return 10 * 60 * 1000;
@@ -136,7 +146,7 @@ class BidWatcher {
       userAgent:
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) " +
         "AppleWebKit/537.36 Chrome/124 Safari/537.36",
-      locale: "pl-PL",
+      locale: "en-US",
       viewport: { width: 1440, height: 900 },
       ignoreHTTPSErrors: Boolean(proxy),
     });
@@ -156,21 +166,26 @@ class BidWatcher {
 
           await page.waitForTimeout(2500);
 
-          const bid = await page.evaluate(() => {
-            const text = document.body.innerText;
-            const match = text.match(
-              /(?:Aktualna oferta|Current bid|Aktualna cena)[^\d$]{0,20}\$?\s?([\d,]+)/i
-            );
+          const pageText = await page.evaluate(() => document.body.innerText);
 
-            return match ? Number(match[1].replace(/,/g, "")) : null;
-          });
+          const bidMatch = pageText.match(
+            /(?:Aktualna oferta|Current Bid|Aktualna cena)[^\d$]{0,20}\$?\s?([\d,]+)/i
+          );
 
-          if (Number.isFinite(bid)) {
-            this.saveBid(item.lot, bid, item.msToClose);
+          const bid = bidMatch
+            ? Number(bidMatch[1].replace(/,/g, ""))
+            : null;
+
+          // Страница уже открыта — дату торгов снимаем тем же заходом.
+          const { saleDate } = parseAuctionTiming(pageText);
+
+          if (Number.isFinite(bid) || saleDate) {
+            this.saveBid(item.lot, bid, saleDate, item.msToClose);
 
             console.log(
-              `   ${item.lot}: ставка $${bid} ` +
-              `(до закрытия ${Math.round(item.msToClose / 3600000)} ч)`
+              `   ${item.lot}: ` +
+              (Number.isFinite(bid) ? `ставка $${bid}` : "ставка не прочитана") +
+              (saleDate ? `, торги ${new Date(saleDate).toLocaleString("ru")}` : "")
             );
           }
         } catch (error) {
@@ -186,7 +201,7 @@ class BidWatcher {
     this.lastCheck = new Date().toISOString();
   }
 
-  saveBid(lotNumber, bid, msToClose) {
+  saveBid(lotNumber, bid, saleDate, msToClose) {
     const cache = this.bidCars.loadCache();
     const now = new Date().toISOString();
 
@@ -195,19 +210,51 @@ class BidWatcher {
         if (String(vehicle.lotNumber) !== String(lotNumber))
           continue;
 
-        vehicle.currentBid = bid;
-        vehicle.bidCheckedAt = now;
+        if (Number.isFinite(bid)) {
+          vehicle.currentBid = bid;
 
-        // История ставок показывает динамику торгов — по ней потом
-        // видно, как быстро лот дорожал перед закрытием.
-        vehicle.bidHistory = [
-          ...(vehicle.bidHistory || []),
-          { bid, at: now, hoursLeft: Math.round(msToClose / 3600000) },
-        ].slice(-40);
+          // История ставок показывает динамику торгов — по ней потом
+          // видно, как быстро лот дорожал перед закрытием.
+          vehicle.bidHistory = [
+            ...(vehicle.bidHistory || []),
+            { bid, at: now, hoursLeft: Math.round(msToClose / 3600000) },
+          ].slice(-40);
+        }
+
+        /*
+         * Перенос торгов — обычное дело, и прежняя дата после этого врёт.
+         * Пишем новую, а старую сохраняем: по ней видно, что лот
+         * переносили, и это само по себе сигнал.
+         */
+        if (saleDate && saleDate !== vehicle.saleDate) {
+          if (vehicle.saleDate) {
+            vehicle.saleDateHistory = [
+              ...(vehicle.saleDateHistory || []),
+              { was: vehicle.saleDate, seenAt: now },
+            ].slice(-10);
+          }
+
+          vehicle.saleDate = saleDate;
+        }
+
+        vehicle.bidCheckedAt = now;
       }
     }
 
     this.bidCars.saveCache(cache);
+
+    /*
+     * Карточка читает дату из истории, а не из реестра лотов. Без этой
+     * записи обновление осталось бы невидимым — на экране так и висело бы
+     * «торги прошли».
+     */
+    if (saleDate) {
+      try {
+        history.setSaleDate(lotNumber, saleDate);
+      } catch (error) {
+        console.error(`   ${lotNumber}: дата торгов не сохранена — ${error.message}`);
+      }
+    }
   }
 }
 

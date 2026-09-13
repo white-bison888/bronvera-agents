@@ -128,6 +128,31 @@ const setMarketReference = (lotNumber, reference) => {
 };
 
 /*
+ * Дату торгов переносят, и записанная при анализе быстро врёт. Карточка
+ * читает её отсюда, а не из реестра лотов, поэтому обновлять нужно здесь —
+ * иначе в интерфейсе навсегда остаётся «торги прошли».
+ */
+const setSaleDate = (lotNumber, saleDate) => {
+  const target = String(lotNumber);
+  const entries = readAll();
+  let updated = 0;
+
+  const next = entries.map((entry) => {
+    if (String(entry.lotNumber) !== target || entry.saleDate === saleDate)
+      return entry;
+
+    updated += 1;
+
+    return { ...entry, saleDate, saleDateCheckedAt: new Date().toISOString() };
+  });
+
+  if (updated > 0)
+    writeAll(next);
+
+  return updated;
+};
+
+/*
  * Характеристики со страницы лота: продавец, ключ, цвет, дата торгов и
  * прочее, чего нет в карточке каталога. Пишутся один раз за визит —
  * повторно ходить на страницу нельзя, площадка блокирует.
@@ -214,5 +239,6 @@ module.exports = {
   setActual,
   setMarketReference,
   setLotDetails,
+  setSaleDate,
   buildSummary,
 };
