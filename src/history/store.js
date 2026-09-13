@@ -196,8 +196,33 @@ const buildSummary = () => {
     entry => entry.actual && Number.isFinite(entry.actual.soldPriceUsd)
   );
 
-  const comparisons = withActual
-    .filter(entry => Number.isFinite(entry.maxBidUsd))
+  /*
+   * Лот в разборе представляет одна оценка — самая свежая. Повторный анализ
+   * дописывает в историю ещё одну запись того же лота, и без этого лот,
+   * который прогоняли пять раз, весил бы в средних впятеро больше остальных.
+   *
+   * Свежая, а не «последняя до торгов» — выбор владельца (2026-09-13).
+   * Анализ, запущенный уже после торгов, заменит собой оценку, по которой
+   * решалась бы ставка.
+   */
+  const latestByLot = new Map();
+  const estimatesByLot = new Map();
+
+  for (const entry of withActual) {
+    if (!Number.isFinite(entry.maxBidUsd))
+      continue;
+
+    const lot = String(entry.lotNumber);
+    const current = latestByLot.get(lot);
+
+    estimatesByLot.set(lot, (estimatesByLot.get(lot) || 0) + 1);
+
+    // При равном времени побеждает запись, дописанная в историю позже.
+    if (!current || (entry.createdAt || "") >= (current.createdAt || ""))
+      latestByLot.set(lot, entry);
+  }
+
+  const comparisons = [...latestByLot.values()]
     .map((entry) => {
       const sold = entry.actual.soldPriceUsd;
       const gap = entry.maxBidUsd - sold;
@@ -227,6 +252,9 @@ const buildSummary = () => {
         photoStatus: entry.photoStatus || null,
         // Цену торгов могли вписать руками, а могли снять с площадки.
         actualSource: entry.actual.note || null,
+        estimatedAt: entry.createdAt || null,
+        // Сколько раз лот оценивали; в расчёт идёт только последняя оценка.
+        estimatesCount: estimatesByLot.get(String(entry.lotNumber)),
       };
     })
     // Крупные расхождения важнее: с них начинают разбор.
@@ -281,7 +309,8 @@ const buildSummary = () => {
   return {
     totalEntries: entries.length,
     lotsTracked: new Set(entries.map(entry => entry.lotNumber)).size,
-    withActualPrice: withActual.length,
+    // Лоты, а не записи: оба экрана подписывают это число как «лотов».
+    withActualPrice: new Set(withActual.map(entry => String(entry.lotNumber))).size,
     // Сколько лотов реально участвует в оценке прогноза.
     forecastCount: forecast.length,
     notViableCount: comparisons.length - forecast.length,
