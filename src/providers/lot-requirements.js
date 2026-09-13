@@ -26,10 +26,14 @@ const isRunAndDrive = normalizedStartCode =>
  */
 const NON_INSURANCE = /non-?\s?insurance/i;
 
+// Площадка ставит "---" там, где продавец не указан. Это неизвестность,
+// а не подтверждение: без этой проверки такой лот проходил как страховой.
+const UNKNOWN_SELLER = /^-+$|^n\/a$|^unknown$/i;
+
 const isInsuranceSeller = value => {
   const seller = String(value || "").trim();
 
-  if (!seller)
+  if (!seller || UNKNOWN_SELLER.test(seller))
     return false;
 
   return !NON_INSURANCE.test(seller);

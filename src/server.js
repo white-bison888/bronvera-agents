@@ -66,6 +66,7 @@ app.post("/api/cars/search", async (req, res) => {
 
       startCodes = [],
       auctionTypes = [],
+      exteriorColors = [],
 
       maxResults = 20,
       maxPages = 2,
@@ -90,6 +91,7 @@ app.post("/api/cars/search", async (req, res) => {
 
       startCodes,
       auctionTypes,
+      exteriorColors,
 
       maxResults,
       maxPages,
@@ -112,6 +114,7 @@ app.post("/api/cars/search", async (req, res) => {
 
       startCodes,
       auctionTypes,
+      exteriorColors,
 
       maxResults,
       maxPages,

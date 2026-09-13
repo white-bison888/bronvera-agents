@@ -888,33 +888,74 @@ class BidCarsProvider {
     return "all";
   }
 
+  /*
+   * Каталог /automobile/<марка>/page/N умеет фильтровать только по марке
+   * и модели, поэтому всё прочее отсеивалось уже у нас: из 343 просмотренных
+   * лотов оставалось 24. Поиск с параметрами задаёт те же требования прямо
+   * в адресе — страницы не тратятся впустую, и реже прилетает 403.
+   *
+   * Две вещи иначе не получить вовсе: цвета в карточке каталога нет,
+   * а завершённые торги идут вперемешку с открытыми.
+   *
+   * Выдача рисуется скриптом и догружается кнопкой, номеров страниц в адресе
+   * нет — источник одностраничный. Для узких запросов этого хватает:
+   * чёрные Tesla 2022+ на ходу укладываются в одну выдачу.
+   */
   buildCatalogUrl(
     bucketKey,
-    pageNumber
+    pageNumber,
+    filters = {}
   ) {
-    if (
-      String(bucketKey).startsWith(
-        "make:"
-      )
-    ) {
-      const makeSlug =
-        String(bucketKey).slice(
-          "make:".length
-        );
+    const makeFromBucket =
+      String(bucketKey).startsWith("make:")
+        ? String(bucketKey).slice("make:".length)
+        : null;
 
-      return (
-        "https://bid.cars/en/" +
-        "automobile/" +
-        `${makeSlug}/` +
-        `page/${pageNumber}`
-      );
+    const params = new URLSearchParams({
+      "search-type": "filters",
+      type: "Automobile",
+
+      // Только открытые торги: по завершённым ставку делать уже поздно.
+      status: "Active",
+
+      // Обязательные признаки версии — задаём на источнике, а не после.
+      "start-code": "Run and Drive",
+
+      make: filters.make || makeFromBucket || "All",
+      model: (Array.isArray(filters.models) && filters.models.length === 1)
+        ? filters.models[0]
+        : "All",
+
+      "year-from": String(filters.yearFrom || 1900),
+      "year-to": String(filters.yearTo || new Date().getFullYear() + 1),
+
+      "auction-type": (Array.isArray(filters.auctionTypes) && filters.auctionTypes.length === 1)
+        ? filters.auctionTypes[0]
+        : "All",
+    });
+
+    const optional = {
+      "exterior-color": filters.exteriorColors,
+      "fuel-type": filters.fuelTypes,
+      "body-style": filters.bodyStyles,
+      "drive-type": filters.driveTypes,
+      transmission: filters.transmissions,
+    };
+
+    // Площадка принимает по одному значению на поле: если запрошено
+    // несколько, сузить на источнике нельзя — отсеем как раньше, у себя.
+    for (const [key, values] of Object.entries(optional)) {
+      if (Array.isArray(values) && values.length === 1)
+        params.set(key, values[0]);
     }
 
-    return (
-      "https://bid.cars/en/" +
-      "automobile/" +
-      `page/${pageNumber}`
-    );
+    if (Number.isFinite(filters.mileageMin))
+      params.set("odometer-from", String(filters.mileageMin));
+
+    if (Number.isFinite(filters.mileageMax))
+      params.set("odometer-to", String(filters.mileageMax));
+
+    return `https://bid.cars/en/search/results?${params.toString()}`;
   }
 
   // ============================================================
@@ -929,9 +970,25 @@ class BidCarsProvider {
     targetMatches = null,
     existingVehicles = [],
   }) {
+    /*
+     * Резидентный прокси здесь так и не был подключён, в отличие от сбора
+     * фотографий и слежения за ставками. С прямого адреса Hetzner Cloudflare
+     * отдаёт 403 — обход стабильно обрывался на седьмой странице, теряя
+     * остаток выдачи.
+     */
+    const proxy = process.env.PROXY_SERVER
+      ? {
+          server: process.env.PROXY_SERVER,
+          username: process.env.PROXY_USERNAME,
+          password: process.env.PROXY_PASSWORD,
+        }
+      : undefined;
+
     const browser =
       await chromium.launch({
         headless: true,
+        args: ["--disable-blink-features=AutomationControlled"],
+        ...(proxy ? { proxy } : {}),
       });
 
     const context =
@@ -955,6 +1012,8 @@ class BidCarsProvider {
           "Accept-Language":
             "en-US,en;q=0.9",
         },
+
+        ignoreHTTPSErrors: Boolean(proxy),
       });
 
     const page =
@@ -990,7 +1049,7 @@ class BidCarsProvider {
         )
       );
 
-    const endPage =
+    let endPage =
       Math.min(
         this.maxSafePages,
         safeStartPage +
@@ -1007,6 +1066,14 @@ class BidCarsProvider {
         `Source scope: ${bucketKey}`
       );
 
+      /*
+       * Поиск с фильтрами не разбит на страницы: номера в адресе он
+       * игнорирует, а догрузка идёт кнопкой на самой странице. Повторный
+       * запрос того же URL Cloudflare принимает за долбёж и отвечает 403,
+       * так что второй заход не только бесполезен, но и вреден.
+       */
+      endPage = safeStartPage;
+
       console.log(
         `Страницы: ${safeStartPage}..${endPage}`
       );
@@ -1020,7 +1087,8 @@ class BidCarsProvider {
         const url =
           this.buildCatalogUrl(
             bucketKey,
-            pageNumber
+            pageNumber,
+            filters
           );
 
         lastSourceUrl = url;
@@ -1148,6 +1216,22 @@ class BidCarsProvider {
 
         lastSuccessfulStatus =
           status;
+
+        /*
+         * Каталог приходил готовым с сервера, а выдачу поиска рисует скрипт:
+         * без ожидания в HTML пусто, и обход молча возвращал ноль лотов.
+         * Ждём появления самих карточек, а не фиксированную паузу —
+         * она либо коротка на медленном прокси, либо тратится впустую.
+         */
+        try {
+          await page.waitForSelector(
+            'a[href*="/lot/"]',
+            { timeout: 20000 }
+          );
+        } catch {
+          // Пустая выдача — законный результат узкого запроса,
+          // отличить её от недогруза можно только по числу лотов ниже.
+        }
 
         await page.waitForTimeout(
           900
@@ -1503,7 +1587,9 @@ class BidCarsProvider {
         const field = (label) =>
           text.match(
             new RegExp(
-              `${label}\\s*:?\\s*(.+?)(?=\\s+${NEXT_LABEL}\\s*:?|\\s*\\$|$)`,
+              // Пробела между полями может не быть: на странице поиска
+              // подписи идут слитно — "(58k km)Seller: ---Sale doc.: ...".
+              `${label}\\s*:?\\s*(.+?)(?=\\s*${NEXT_LABEL}\\s*:?|\\s*\\$|$)`,
               "i"
             )
           );
@@ -2462,6 +2548,16 @@ class BidCarsProvider {
                 value
               )
           ),
+
+      /*
+       * Цвет задаётся только на источнике: в карточке каталога его нет,
+       * а на странице лота он появляется уже после дорогого визита.
+       * Значения оставляем как есть — площадка ждёт "Black", а не "black".
+       */
+      exteriorColors:
+        this.arr(
+          options.exteriorColors
+        ),
     };
   }
 
