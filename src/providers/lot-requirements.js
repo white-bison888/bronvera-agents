@@ -15,8 +15,25 @@ const RUN_AND_DRIVE = "run_and_drive";
 const isRunAndDrive = normalizedStartCode =>
   normalizedStartCode === RUN_AND_DRIVE;
 
-const isInsuranceSeller = value =>
-  /insurance|ubezpieczenio|страхов/i.test(String(value || ""));
+/*
+ * Площадка пишет в это поле либо категорию ("Insurance Company",
+ * "Non-insurance Company"), либо имя страховой — Geico, Usaa,
+ * Plymouth Rock Assurance. Искать подстроку "insurance" нельзя дважды:
+ * она есть внутри "Non-insurance", а у Geico и Usaa её нет вовсе.
+ *
+ * Поэтому отталкиваемся от единственной явной пометки, которой bid.cars
+ * помечает не-страховых продавцов, и всё остальное считаем страховыми.
+ */
+const NON_INSURANCE = /non-?\s?insurance/i;
+
+const isInsuranceSeller = value => {
+  const seller = String(value || "").trim();
+
+  if (!seller)
+    return false;
+
+  return !NON_INSURANCE.test(seller);
+};
 
 /*
  * Продавца может не быть в данных: страницу лота ещё не обходили.

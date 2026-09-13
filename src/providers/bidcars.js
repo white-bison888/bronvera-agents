@@ -3,7 +3,7 @@ const path = require("path");
 const cheerio = require("cheerio");
 const { chromium } = require("playwright");
 const { parseAuctionTiming } = require("./auction-timing");
-const { isRunAndDrive } = require("./lot-requirements");
+const { isRunAndDrive, isInsuranceSeller } = require("./lot-requirements");
 
 class BidCarsRateLimitError extends Error {
   constructor(message, retryAfterSeconds = null) {
@@ -1481,84 +1481,66 @@ class BidCarsProvider {
         );
 
         // ------------------------------------------------------
-        // MILEAGE
+        // ПОЛЯ КАРТОЧКИ КАТАЛОГА
+        //
+        // Подписи идут в тексте одной строкой, в таком порядке:
+        //   Milage → Seller → Sale doc. → Location → Damage → Status
+        //   → Current Bid → Buy Now → Opened auction → Key
+        //
+        // "Milage" — опечатка самой площадки, не наша. Польские подписи
+        // оставлены на случай, когда сайт отдаёт локаль по-своему.
         // ------------------------------------------------------
+
+        const NEXT_LABEL =
+          "(?:Milage|Mileage|Odometer|Przebieg|Seller|Sprzedawca|" +
+          "Sale doc\\.|Sale Document|Dokument|Location|Lokalizacja|" +
+          "Damage|Uszkodzenie|Status|Current Bid|Aktualna oferta|" +
+          "Buy Now|Opened auction|Key)";
+
+        // Значение тянется до следующей подписи или до цены: после Status
+        // в той же строке идёт оценка аукциона, и без этой границы
+        // состояние запуска захватывало полкарточки.
+        const field = (label) =>
+          text.match(
+            new RegExp(
+              `${label}\\s*:?\\s*(.+?)(?=\\s+${NEXT_LABEL}\\s*:?|\\s*\\$|$)`,
+              "i"
+            )
+          );
 
         const mileageMatch =
           text.match(
-            /(?:Przebieg|Mileage|Odometer)\s*:?\s*([\d\s.,]+)\s*(k)?\s*(?:mi|mile|miles|mil)?/i
+            /(?:Milage|Przebieg|Mileage|Odometer)\s*:?\s*([\d\s.,]+)\s*(k)?\s*(?:mi|mile|miles|mil)?/i
           );
-
-        // ------------------------------------------------------
-        // CURRENT BID
-        // ------------------------------------------------------
 
         const bidMatch =
           text.match(
             /(?:Aktualna oferta|Current Bid|Oferta)\s*:?\s*\$?\s*([\d,.]+)/i
           );
 
-        // ------------------------------------------------------
-        // DAMAGE
-        // ------------------------------------------------------
-
-        const damageMatch =
+        const buyNowMatch =
           text.match(
-            /(?:Uszkodzenie|Primary damage)\s*:?\s*(.+?)(?=\s+(?:Status|Dokument|Lokalizacja|Location|Aktualna oferta|Current Bid)|$)/i
+            /Buy Now\s*:?\s*\$?\s*([\d,.]+)/i
           );
 
-        // ------------------------------------------------------
-        // SECONDARY DAMAGE
-        // ------------------------------------------------------
+        const sellerMatch = field("(?:Seller|Sprzedawca)");
+        const titleMatch = field("(?:Sale doc\\.|Sale Document|Dokument)");
+        const locationMatch = field("(?:Location|Lokalizacja)");
+        const statusMatch = field("(?:Status|Start code)");
 
-        const secondaryDamageMatch =
+        /*
+         * Повреждения приходят одним полем через вертикальную черту:
+         * "Collision | Rear" — сначала основное, затем дополнительное.
+         */
+        const damageParts = (field("(?:Damage|Uszkodzenie)")?.[1] || "")
+          .split("|")
+          .map(part => this.clean(part))
+          .filter(Boolean);
+
+        const keyMatch =
           text.match(
-            /(?:Uszkodzenie dodatkowe|Secondary damage)\s*:?\s*(.+?)(?=\s+(?:Odometer|Przebieg|Licznik|Start code|Status|Key|Kluczyk)|$)/i
+            /\bKey\s+(Present|Missing|Not present|Unknown)\b/i
           );
-
-        // ------------------------------------------------------
-        // SELLER
-        //
-        // В карточке каталога поля обычно нет — оно живёт на странице
-        // лота и доезжает сюда при поштучном обходе. Разбор оставлен
-        // на случай, когда площадка всё же его показывает.
-        // ------------------------------------------------------
-
-        const sellerMatch =
-          text.match(
-            /(?:Sprzedawca|Seller)\s*:?\s*(.+?)(?=\s+(?:Sale Document|Dokument|Loss|Strata|Primary damage|Uszkodzenie)|$)/i
-          );
-
-        // ------------------------------------------------------
-        // STATUS / START CODE
-        // ------------------------------------------------------
-
-        const statusMatch =
-          text.match(
-            /(?:Status|Start code)\s*:?\s*(.+?)(?=\s+(?:Aktualna oferta|Current Bid|Dokument|Lokalizacja|Location|$))/i
-          );
-
-        // ------------------------------------------------------
-        // DOCUMENT
-        // ------------------------------------------------------
-
-        const titleMatch =
-          text.match(
-            /(?:Dokument|Sale Document)\s*:?\s*(.+?)(?=\s+(?:Lokalizacja|Location|Uszkodzenie|Status)|$)/i
-          );
-
-        // ------------------------------------------------------
-        // LOCATION
-        // ------------------------------------------------------
-
-        const locationMatch =
-          text.match(
-            /(?:Lokalizacja|Location)\s*:?\s*(.+?)(?=\s+(?:Uszkodzenie|Status|Dokument|Aktualna oferta|Current Bid)|$)/i
-          );
-
-        // ------------------------------------------------------
-        // ESTIMATED RETAIL VALUE
-        // ------------------------------------------------------
 
         const retailMatch =
           text.match(
@@ -1606,16 +1588,22 @@ class BidCarsProvider {
             ),
 
           primaryDamage:
-            damageMatch
+            damageParts[0] || null,
+
+          secondaryDamage:
+            damageParts[1] || null,
+
+          keyPresence:
+            keyMatch
               ? this.clean(
-                  damageMatch[1]
+                  keyMatch[1]
                 )
               : null,
 
-          secondaryDamage:
-            secondaryDamageMatch
-              ? this.clean(
-                  secondaryDamageMatch[1]
+          buyNowUsd:
+            buyNowMatch
+              ? this.parseMoney(
+                  buyNowMatch[1]
                 )
               : null,
 
@@ -1963,29 +1951,34 @@ class BidCarsProvider {
       );
 
     /*
-     * Жёсткое требование версии: лот без Run and Drive не рассматриваем
-     * независимо от фильтров поиска. Отсев логируем — если разбор Start code
-     * сломается, здесь молча исчезнут все лоты, и это нужно замечать.
+     * Жёсткие требования версии: лот без Run and Drive и без страхового
+     * продавца не рассматриваем независимо от фильтров поиска. Отсев
+     * логируем — если разбор этих двух полей сломается, здесь молча
+     * исчезнут все лоты, и это нужно замечать.
      */
-    const drivable = candidates.filter(
+    const eligible = candidates.filter(
       (car) =>
         isRunAndDrive(
           this.normalizeStartCode(
             car.runAndDrive
           )
+        ) &&
+        isInsuranceSeller(
+          car.seller
         )
     );
 
     if (
       candidates.length > 0 &&
-      drivable.length < candidates.length
+      eligible.length < candidates.length
     ) {
       console.log(
-        `   Run and Drive: оставлено ${drivable.length} из ${candidates.length}`
+        `   Run and Drive + страховой продавец: ` +
+        `оставлено ${eligible.length} из ${candidates.length}`
       );
     }
 
-    return drivable
+    return eligible
 
       .map(
         (car) => ({
