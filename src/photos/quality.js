@@ -63,7 +63,7 @@ const inspectPhoto = async (file) => {
   const lib = loadSharp();
 
   if (!lib)
-    return null;
+    return "проверка изображения недоступна: отсутствует sharp";
 
   try {
     const { channels } = await lib(file).stats();

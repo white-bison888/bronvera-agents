@@ -12,7 +12,17 @@
 const MONTHS = {
   sty: 0, lut: 1, mar: 2, kwi: 3, maj: 4, cze: 5,
   lip: 6, sie: 7, wrz: 8, paź: 9, paz: 9, lis: 10, gru: 11,
+
+  january: 0, february: 1, march: 2, april: 3, may: 4, june: 5,
+  july: 6, august: 7, september: 8, october: 9, november: 10, december: 11,
+  jan: 0, feb: 1, apr: 3, jun: 5, jul: 6, aug: 7,
+  sep: 8, sept: 8, oct: 9, nov: 10, dec: 11,
 };
+
+// Длинные названия идут первыми, иначе "september" совпадёт как "sep".
+const MONTH_ALTERNATION = Object.keys(MONTHS)
+  .sort((a, b) => b.length - a.length)
+  .join("|");
 
 const parseEstimate = (text) => {
   const match = text.match(
@@ -36,8 +46,9 @@ const parseEstimate = (text) => {
  * речь о следующем годе.
  */
 const parseSaleDate = (text, now = new Date()) => {
+  // Польская форма "8 wrz, 15:30" и английская "14 September, 16:00".
   const match = text.match(
-    /(\d{1,2})\s+([a-ząćęłńóśźż]{3,4})\.?,?\s+(\d{1,2}):(\d{2})/i
+    new RegExp(`(\\d{1,2})\\s+(${MONTH_ALTERNATION})\\.?,?\\s+(\\d{1,2}):(\\d{2})`, "i")
   );
 
   if (!match)
@@ -68,21 +79,42 @@ const parseSaleDate = (text, now = new Date()) => {
   return date.toISOString();
 };
 
-const parseTimeLeft = (text) => {
-  const match = text.match(
-    /(?:(\d+)\s*d)?\s*(?:(\d+)\s*h)?\s*(?:(\d+)\s*min)?\s*do\s+zamkni/i
-  );
+const readDuration = (segment) => {
+  const days = segment.match(/(\d+)\s*d\b/i);
+  const hours = segment.match(/(\d+)\s*h\b/i);
+  const minutes = segment.match(/(\d+)\s*min\b/i);
 
-  if (!match)
+  if (!days && !hours && !minutes)
     return null;
 
-  const days = Number(match[1] || 0);
-  const hours = Number(match[2] || 0);
-  const minutes = Number(match[3] || 0);
-
-  const total = ((days * 24 + hours) * 60 + minutes) * 60 * 1000;
+  const total = ((Number(days?.[1] || 0) * 24 + Number(hours?.[1] || 0)) * 60
+    + Number(minutes?.[1] || 0)) * 60 * 1000;
 
   return total > 0 ? total : null;
+};
+
+const parseTimeLeft = (text) => {
+  // Польская форма: "3 d 0 h 58 min do zamknięcia" — счёт стоит перед фразой.
+  const polish = text.match(/(.{0,40}?)do\s+zamkni/i);
+
+  if (polish) {
+    const value = readDuration(polish[1]);
+
+    if (value)
+      return value;
+  }
+
+  // Английская: "Time left 0 d 23 h 26 min 40 sec" — после подписи.
+  const english = text.match(/Time\s+left(.{0,40})/i);
+
+  if (english) {
+    const value = readDuration(english[1]);
+
+    if (value)
+      return value;
+  }
+
+  return null;
 };
 
 const parseAuctionTiming = (raw, now = new Date()) => {

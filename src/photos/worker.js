@@ -1,6 +1,7 @@
 const queue = require("./queue");
 const history = require("../history/store");
 const { calculateMaxBid } = require("../economics/max-bid");
+const { checkSeller } = require("../providers/lot-requirements");
 
 /*
  * Bid.Cars закрывает доступ уже со второго лота подряд, поэтому сбор
@@ -128,6 +129,29 @@ class PhotoWorker {
       { lotNumber, url: listing.url },
     ]);
 
+    const details = (this.photoCollector.takeDetails?.() || {})[String(lotNumber)];
+
+    /*
+     * Продавца видно только на странице лота, поэтому требование проверяется
+     * здесь, а не при отборе каталога. Чужой продавец — отказ окончательный:
+     * убираем лот из очереди, оценку не запускаем.
+     */
+    const sellerCheck = checkSeller(details?.seller);
+
+    if (sellerCheck.known && !sellerCheck.ok) {
+      queue.markDone(lotNumber, 0);
+
+      console.log(`   ${lotNumber}: пропуск — ${sellerCheck.reason}`);
+
+      return;
+    }
+
+    if (!sellerCheck.known)
+      console.log(`   ${lotNumber}: продавец не прочитан, оцениваем без проверки`);
+
+    if (details)
+      this.saveDetails(lotNumber, details);
+
     const files = photos[String(lotNumber)] || [];
 
     if (files.length === 0) {
@@ -184,6 +208,15 @@ class PhotoWorker {
       at: new Date().toISOString(),
     };
 
+  }
+
+  saveDetails(lotNumber, details) {
+    try {
+      history.setLotDetails(lotNumber, details);
+    } catch (error) {
+      // Характеристики — дополнение к оценке, ронять из-за них сбор нельзя.
+      console.error(`   ${lotNumber}: не удалось сохранить характеристики — ${error.message}`);
+    }
   }
 
   /*

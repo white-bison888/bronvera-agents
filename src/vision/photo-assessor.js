@@ -29,7 +29,18 @@ class PhotoAssessor {
      */
     this.maxPhotos = options.maxPhotos || 0;
 
-    this.cacheVersion = CACHE_VERSION;
+    /*
+     * Модель выбирает сервис, но привязка кэша к ней остаётся: разбор,
+     * сделанный другой моделью, — другой разбор. По умолчанию роль ключа
+     * играет адрес сервиса, а CACHE_VERSION поднимают руками, когда там
+     * меняется промпт.
+     */
+    this.model = options.model || API_URL;
+
+    this.cacheVersion = createHash("sha256")
+      .update([CACHE_VERSION, this.model].join("|"))
+      .digest("hex");
+
     this.concurrency = 2;
   }
 
@@ -94,7 +105,7 @@ class PhotoAssessor {
       .join(", ");
 
     const payload = await measuredCall(
-      { component: "vision", lotNumber: String(lot.lotNumber), model: "vision-service" },
+      { component: "vision", lotNumber: String(lot.lotNumber), model: this.model },
       async () => {
         const response = await fetch(API_URL, {
           // Все снимки лота уходят одним запросом, ответ идёт от внешней

@@ -3,6 +3,7 @@ const path = require("path");
 const cheerio = require("cheerio");
 const { chromium } = require("playwright");
 const { parseAuctionTiming } = require("./auction-timing");
+const { isRunAndDrive } = require("./lot-requirements");
 
 class BidCarsRateLimitError extends Error {
   constructor(message, retryAfterSeconds = null) {
@@ -902,17 +903,17 @@ class BidCarsProvider {
         );
 
       return (
-        "https://bid.cars/pl/" +
-        "samochody/" +
+        "https://bid.cars/en/" +
+        "automobile/" +
         `${makeSlug}/` +
-        `strona/${pageNumber}`
+        `page/${pageNumber}`
       );
     }
 
     return (
-      "https://bid.cars/pl/" +
-      "samochody/" +
-      `strona/${pageNumber}`
+      "https://bid.cars/en/" +
+      "automobile/" +
+      `page/${pageNumber}`
     );
   }
 
@@ -941,7 +942,9 @@ class BidCarsProvider {
           "AppleWebKit/537.36 " +
           "Chrome/124 Safari/537.36",
 
-        locale: "pl-PL",
+        // Английская версия: подписи полей совпадают с тем, что видит
+        // пользователь, и не приходится держать переводы меток.
+        locale: "en-US",
 
         viewport: {
           width: 1440,
@@ -950,7 +953,7 @@ class BidCarsProvider {
 
         extraHTTPHeaders: {
           "Accept-Language":
-            "pl-PL,pl;q=0.9,en;q=0.8",
+            "en-US,en;q=0.9",
         },
       });
 
@@ -1505,6 +1508,28 @@ class BidCarsProvider {
           );
 
         // ------------------------------------------------------
+        // SECONDARY DAMAGE
+        // ------------------------------------------------------
+
+        const secondaryDamageMatch =
+          text.match(
+            /(?:Uszkodzenie dodatkowe|Secondary damage)\s*:?\s*(.+?)(?=\s+(?:Odometer|Przebieg|Licznik|Start code|Status|Key|Kluczyk)|$)/i
+          );
+
+        // ------------------------------------------------------
+        // SELLER
+        //
+        // В карточке каталога поля обычно нет — оно живёт на странице
+        // лота и доезжает сюда при поштучном обходе. Разбор оставлен
+        // на случай, когда площадка всё же его показывает.
+        // ------------------------------------------------------
+
+        const sellerMatch =
+          text.match(
+            /(?:Sprzedawca|Seller)\s*:?\s*(.+?)(?=\s+(?:Sale Document|Dokument|Loss|Strata|Primary damage|Uszkodzenie)|$)/i
+          );
+
+        // ------------------------------------------------------
         // STATUS / START CODE
         // ------------------------------------------------------
 
@@ -1588,7 +1613,18 @@ class BidCarsProvider {
               : null,
 
           secondaryDamage:
-            null,
+            secondaryDamageMatch
+              ? this.clean(
+                  secondaryDamageMatch[1]
+                )
+              : null,
+
+          seller:
+            sellerMatch
+              ? this.clean(
+                  sellerMatch[1]
+                )
+              : null,
 
           runAndDrive:
             statusMatch
@@ -1915,7 +1951,7 @@ class BidCarsProvider {
     filters,
     maxResults
   ) {
-    return this
+    const candidates = this
       .deduplicate(
         vehicles
       )
@@ -1924,7 +1960,32 @@ class BidCarsProvider {
         (car) =>
           car.vehicleType !==
           "non_car"
-      )
+      );
+
+    /*
+     * Жёсткое требование версии: лот без Run and Drive не рассматриваем
+     * независимо от фильтров поиска. Отсев логируем — если разбор Start code
+     * сломается, здесь молча исчезнут все лоты, и это нужно замечать.
+     */
+    const drivable = candidates.filter(
+      (car) =>
+        isRunAndDrive(
+          this.normalizeStartCode(
+            car.runAndDrive
+          )
+        )
+    );
+
+    if (
+      candidates.length > 0 &&
+      drivable.length < candidates.length
+    ) {
+      console.log(
+        `   Run and Drive: оставлено ${drivable.length} из ${candidates.length}`
+      );
+    }
+
+    return drivable
 
       .map(
         (car) => ({

@@ -5,6 +5,55 @@ const { inspectPhoto, MIN_FILE_BYTES } = require("../photos/quality");
 
 const PHOTO_URL_PATTERN = /https:\/\/images\.bid\.cars\/[^"'\s\\)]+\.jpg/g;
 
+const { parseAuctionTiming } = require("./auction-timing");
+
+/*
+ * Часть характеристик есть только на странице лота: в карточке каталога
+ * нет ни продавца, ни ключа, ни цвета. Отдельный обход ради них заводить
+ * нельзя — площадка блокирует уже на втором лоте подряд, поэтому поля
+ * снимаются здесь же, за тот самый визит, что нужен для фотографий.
+ */
+const DETAIL_FIELDS = {
+  seller: "Seller",
+  saleDocument: "Sale Document",
+  loss: "Loss",
+  primaryDamage: "Primary damage",
+  secondaryDamage: "Secondary damage",
+  odometer: "Odometer",
+  startCode: "Start code",
+  keyPresence: "Key",
+  acvErc: "ACV / ERC",
+  bodyStyle: "Body Style",
+  exteriorColor: "Exterior color",
+  transmission: "Transmission",
+  fuelType: "Fuel Type",
+  location: "Location",
+  shippingFrom: "Shipping from",
+  estimatedCost: "Estimated cost",
+  engine: "Engine",
+  cylinders: "Cylinders",
+  driveType: "Drive",
+  highlights: "Highlights",
+};
+
+// Разметка страницы кладёт подпись и значение отдельными строками,
+// поэтому берём первую непустую строку после подписи.
+const readField = (lines, label) => {
+  const index = lines.findIndex(
+    line => line === label || line === `${label}:`
+  );
+
+  if (index === -1)
+    return null;
+
+  for (let i = index + 1; i < Math.min(index + 4, lines.length); i += 1) {
+    if (lines[i] && !lines[i].endsWith(":"))
+      return lines[i];
+  }
+
+  return null;
+};
+
 /*
  * Фотографии лота не меняются, поэтому кэш здесь вечный: один раз
  * собрали ссылки — больше страницу лота не открываем. Это и экономит
@@ -59,6 +108,38 @@ class LotPhotoCollector {
     const found = html.match(PHOTO_URL_PATTERN) || [];
 
     return [...new Set(found)].slice(0, this.maxPhotosPerLot);
+  }
+
+  async extractLotDetails(page) {
+    let text;
+
+    try {
+      text = await page.evaluate(() => document.body.innerText);
+    } catch {
+      return null;
+    }
+
+    const lines = String(text || "")
+      .split("\n")
+      .map(line => line.trim());
+
+    const details = {};
+
+    for (const [field, label] of Object.entries(DETAIL_FIELDS)) {
+      const value = readField(lines, label);
+
+      if (value)
+        details[field] = value;
+    }
+
+    const timing = parseAuctionTiming(String(text || ""));
+
+    for (const [field, value] of Object.entries(timing)) {
+      if (value !== null && value !== undefined)
+        details[field] = value;
+    }
+
+    return Object.keys(details).length > 0 ? details : null;
   }
 
   /*
@@ -245,7 +326,22 @@ class LotPhotoCollector {
       });
   }
 
+  /*
+   * Характеристики, снятые со страниц лотов в этом заходе. Отдельно от
+   * файлов, чтобы не менять форму ответа collect() — её читают в нескольких
+   * местах, и там ждут список путей к снимкам.
+   */
+  takeDetails() {
+    const collected = this.details || {};
+
+    this.details = {};
+
+    return collected;
+  }
+
   async collect(lots = []) {
+    this.details = {};
+
     const cache = this.loadCache();
     const result = {};
 
@@ -348,7 +444,7 @@ class LotPhotoCollector {
       // Через резидентный прокси страница грузится медленно, поэтому
       // неудача прогрева не должна ронять весь сбор.
       try {
-        await page.goto("https://bid.cars/pl/", {
+        await page.goto("https://bid.cars/en/", {
           waitUntil: "domcontentloaded",
           timeout: 90000,
         });
@@ -386,6 +482,11 @@ class LotPhotoCollector {
           await page.waitForTimeout(5000);
 
           const urls = this.extractPhotoUrls(await page.content());
+
+          const details = await this.extractLotDetails(page);
+
+          if (details)
+            this.details[key] = details;
 
           let files = await this.savePhotos(context, key, urls, intercepted);
 

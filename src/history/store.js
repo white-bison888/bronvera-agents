@@ -105,11 +105,49 @@ const setMarketReference = (lotNumber, reference) => {
       marketReference: {
         ...(entry.marketReference || {}),
         ...(Number.isFinite(reference.polandPriceUsd)
-          ? { polandPriceUsd: reference.polandPriceUsd }
+          ? {
+              polandPriceUsd: reference.polandPriceUsd,
+              ...(reference.polandPriceUsd !== entry.marketReference?.polandPriceUsd
+                ? { polandSourceUrl: null, polandObservedOn: null } : {}),
+            }
           : {}),
+        ...(reference.polandSourceUrl !== undefined
+          ? { polandSourceUrl: reference.polandSourceUrl, polandObservedOn: reference.polandObservedOn } : {}),
         ...(Number.isFinite(reference.belarusPriceUsd)
           ? { belarusPriceUsd: reference.belarusPriceUsd }
           : {}),
+        updatedAt: new Date().toISOString(),
+      },
+    };
+  });
+
+  if (updated > 0)
+    writeAll(next);
+
+  return updated;
+};
+
+/*
+ * Характеристики со страницы лота: продавец, ключ, цвет, дата торгов и
+ * прочее, чего нет в карточке каталога. Пишутся один раз за визит —
+ * повторно ходить на страницу нельзя, площадка блокирует.
+ */
+const setLotDetails = (lotNumber, details) => {
+  const target = String(lotNumber);
+  const entries = readAll();
+  let updated = 0;
+
+  const next = entries.map((entry) => {
+    if (String(entry.lotNumber) !== target)
+      return entry;
+
+    updated += 1;
+
+    return {
+      ...entry,
+      lotDetails: {
+        ...(entry.lotDetails || {}),
+        ...details,
         updatedAt: new Date().toISOString(),
       },
     };
@@ -175,5 +213,6 @@ module.exports = {
   appendRun,
   setActual,
   setMarketReference,
+  setLotDetails,
   buildSummary,
 };
