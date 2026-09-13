@@ -3,7 +3,7 @@ const path = require("path");
 const cheerio = require("cheerio");
 const { chromium } = require("playwright");
 const { parseAuctionTiming } = require("./auction-timing");
-const { isRunAndDrive, isInsuranceSeller } = require("./lot-requirements");
+const { isRunAndDrive, checkSeller } = require("./lot-requirements");
 
 class BidCarsRateLimitError extends Error {
   constructor(message, retryAfterSeconds = null) {
@@ -2072,17 +2072,27 @@ class BidCarsProvider {
      * логируем — если разбор этих двух полей сломается, здесь молча
      * исчезнут все лоты, и это нужно замечать.
      */
-    const eligible = candidates.filter(
-      (car) =>
-        isRunAndDrive(
-          this.normalizeStartCode(
-            car.runAndDrive
-          )
-        ) &&
-        isInsuranceSeller(
-          car.seller
-        )
-    );
+    /*
+     * Продавца площадка показывает не всегда: примерно у половины лотов
+     * в выдаче стоит прочерк. Отсекать их здесь значит терять половину
+     * поиска из-за того, чего мы просто ещё не знаем.
+     *
+     * Поэтому на входе отбрасываем только тех, чей продавец известен и
+     * не подходит. Неизвестные идут дальше и проверяются после визита на
+     * страницу лота — туда сборщик фотографий всё равно заходит.
+     */
+    const eligible = candidates.filter((car) => {
+      if (!isRunAndDrive(this.normalizeStartCode(car.runAndDrive)))
+        return false;
+
+      const seller = checkSeller(car.seller);
+
+      return seller.ok || !seller.known;
+    });
+
+    const unknownSellers = eligible.filter(
+      car => !checkSeller(car.seller).known
+    ).length;
 
     /*
      * Отсев видно только в логе, а пользователю нужно понимать, почему
@@ -2093,6 +2103,7 @@ class BidCarsProvider {
       scanned: candidates.length,
       eligible: eligible.length,
       rejected: candidates.length - eligible.length,
+      unknownSellers,
       at: new Date().toISOString(),
     };
 
@@ -2102,7 +2113,10 @@ class BidCarsProvider {
     ) {
       console.log(
         `   Run and Drive + страховой продавец: ` +
-        `оставлено ${eligible.length} из ${candidates.length}`
+        `оставлено ${eligible.length} из ${candidates.length}` +
+        (unknownSellers > 0
+          ? `, из них ${unknownSellers} с непрочитанным продавцом — проверим на странице лота`
+          : "")
       );
     }
 

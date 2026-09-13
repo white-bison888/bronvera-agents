@@ -42,7 +42,16 @@ const NOT_INSURERS = [
 
 // Площадка ставит "---" там, где продавец не указан. Это неизвестность,
 // а не подтверждение: без этой проверки такой лот проходил как страховой.
-const UNKNOWN_SELLER = /^-+$|^n\/a$|^unknown$/i;
+/*
+ * Площадка обозначает отсутствие продавца по-разному: "---" в выдаче поиска
+ * и "No information" на странице лота. Проверено: у лота с прочерком в
+ * каталоге страница показывает именно "No information" — сведений нет
+ * нигде, дотянуть их неоткуда.
+ *
+ * Важно не спутать это с подтверждением: строка непустая, и без явной
+ * проверки она проходила как страховая компания.
+ */
+const UNKNOWN_SELLER = /^-+$|^n\/a$|^unknown$|^no\s+information$/i;
 
 const isInsuranceSeller = value => {
   const seller = String(value || "").trim();
@@ -62,14 +71,22 @@ const isInsuranceSeller = value => {
  * выбросить лот, который ещё никто не проверял.
  */
 const checkSeller = (seller) => {
-  if (!seller)
-    return { ok: false, known: false, reason: "продавец ещё не прочитан" };
+  const value = String(seller || "").trim();
 
-  if (!isInsuranceSeller(seller))
+  /*
+   * Пусто, прочерк и "No information" — это неизвестность, а не отказ.
+   * Разница важна: неподходящего продавца лот получает окончательно и
+   * выбывает, а неизвестного — оценивается с пометкой, иначе половина
+   * выдачи пропадёт из-за того, чего площадка просто не публикует.
+   */
+  if (!value || UNKNOWN_SELLER.test(value))
+    return { ok: false, known: false, reason: "продавец не указан" };
+
+  if (!isInsuranceSeller(value))
     return {
       ok: false,
       known: true,
-      reason: `продавец «${seller}», нужна страховая компания`,
+      reason: `продавец «${value}», нужна страховая компания`,
     };
 
   return { ok: true, known: true, reason: null };
