@@ -1,8 +1,10 @@
-"""Семантический разбор фотографий лота через GigaChat.
+"""Семантический разбор фотографий лота.
 
 YOLO отвечает на вопрос «есть ли на снимке знакомый дефект». Этот модуль
 отвечает на вопрос «что вообще с машиной»: сорванная крыша, открытый лонжерон,
 сработавшие подушки — то, чего нет среди классов детектора.
+
+Поставщик выбирается переменной VISION_PROVIDER: gemini или gigachat.
 """
 
 import json
@@ -13,12 +15,17 @@ import tempfile
 
 logger = logging.getLogger(__name__)
 
-CREDENTIALS = os.getenv('GIGACHAT_CREDENTIALS', '')
-MODEL = os.getenv('GIGACHAT_MODEL', 'GigaChat-2-Max')
-SCOPE = os.getenv('GIGACHAT_SCOPE', 'GIGACHAT_API_PERS')
+PROVIDER = os.getenv('VISION_PROVIDER', 'gemini').lower()
+MAX_PHOTOS = int(os.getenv('VISION_MAX_PHOTOS', '4'))
+
+GEMINI_KEY = os.getenv('GEMINI_API_KEY', '')
+GEMINI_MODEL = os.getenv('GEMINI_MODEL', 'gemini-2.5-flash')
+
+GIGACHAT_CREDENTIALS = os.getenv('GIGACHAT_CREDENTIALS', '')
+GIGACHAT_MODEL = os.getenv('GIGACHAT_MODEL', 'GigaChat-2-Max')
+GIGACHAT_SCOPE = os.getenv('GIGACHAT_SCOPE', 'GIGACHAT_API_PERS')
 # Sber подписывает сертификаты собственным УЦ, которого нет в системном хранилище.
-VERIFY_SSL = os.getenv('GIGACHAT_VERIFY_SSL', 'false').lower() == 'true'
-MAX_PHOTOS = int(os.getenv('GIGACHAT_MAX_PHOTOS', '4'))
+GIGACHAT_VERIFY_SSL = os.getenv('GIGACHAT_VERIFY_SSL', 'false').lower() == 'true'
 
 PROMPT = """Ты осматриваешь фотографию автомобиля с аукциона битых машин.
 
@@ -55,52 +62,92 @@ def _extract_json(text):
     return json.loads(match.group(0))
 
 
+def _gemini_call(images):
+    from google import genai
+    from google.genai import types
+
+    client = genai.Client(api_key=GEMINI_KEY)
+    config = types.GenerateContentConfig(
+        temperature=0.1,
+        response_mime_type="application/json",
+    )
+
+    out = []
+    for index, raw in enumerate(images):
+        try:
+            response = client.models.generate_content(
+                model=GEMINI_MODEL,
+                contents=[types.Part.from_bytes(data=raw, mime_type="image/jpeg"), PROMPT],
+                config=config,
+            )
+            payload = _extract_json(response.text)
+            payload["photoIndex"] = index
+            out.append(payload)
+        except Exception as exc:
+            logger.error(f"Gemini, фото {index}: {exc}")
+            out.append({"photoIndex": index, "error": str(exc)})
+    return out
+
+
+def _gigachat_call(images):
+    from gigachat import GigaChat
+
+    out = []
+    with GigaChat(credentials=GIGACHAT_CREDENTIALS, scope=GIGACHAT_SCOPE,
+                  model=GIGACHAT_MODEL, verify_ssl_certs=GIGACHAT_VERIFY_SSL,
+                  timeout=180) as client:
+        for index, raw in enumerate(images):
+            try:
+                with tempfile.NamedTemporaryFile(suffix=".jpg") as tmp:
+                    tmp.write(raw)
+                    tmp.flush()
+                    tmp.seek(0)
+                    uploaded = client.upload_file(tmp, purpose="general")
+
+                answer = client.chat({
+                    "messages": [{
+                        "role": "user",
+                        "content": PROMPT,
+                        "attachments": [uploaded.id_],
+                    }],
+                    "temperature": 0.1,
+                })
+                payload = _extract_json(answer.choices[0].message.content)
+                payload["photoIndex"] = index
+                out.append(payload)
+            except Exception as exc:
+                logger.error(f"GigaChat, фото {index}: {exc}")
+                out.append({"photoIndex": index, "error": str(exc)})
+    return out
+
+
+PROVIDERS = {
+    'gemini': (_gemini_call, lambda: bool(GEMINI_KEY), 'GEMINI_API_KEY не задан', GEMINI_MODEL),
+    'gigachat': (_gigachat_call, lambda: bool(GIGACHAT_CREDENTIALS),
+                 'GIGACHAT_CREDENTIALS не задан', GIGACHAT_MODEL),
+}
+
+
 def analyze(images, lot_number="unknown"):
-    """images — список bytes. Возвращает разбор по каждому снимку."""
-    if not CREDENTIALS:
-        return {"available": False, "reason": "GIGACHAT_CREDENTIALS не задан"}
+    """images — список bytes. Возвращает сводный разбор по всем снимкам."""
+    provider = PROVIDERS.get(PROVIDER)
+    if provider is None:
+        return {"available": False, "reason": f"неизвестный VISION_PROVIDER: {PROVIDER}"}
+
+    call, configured, missing_reason, model_name = provider
+    if not configured():
+        return {"available": False, "reason": missing_reason}
 
     try:
-        from gigachat import GigaChat
-    except ImportError:
-        return {"available": False, "reason": "пакет gigachat не установлен"}
-
-    results = []
-    try:
-        with GigaChat(credentials=CREDENTIALS, scope=SCOPE, model=MODEL,
-                      verify_ssl_certs=VERIFY_SSL, timeout=180) as client:
-            for index, raw in enumerate(images[:MAX_PHOTOS]):
-                try:
-                    with tempfile.NamedTemporaryFile(suffix=".jpg") as tmp:
-                        tmp.write(raw)
-                        tmp.flush()
-                        tmp.seek(0)
-                        uploaded = client.upload_file(tmp, purpose="general")
-
-                    answer = client.chat({
-                        "messages": [{
-                            "role": "user",
-                            "content": PROMPT,
-                            "attachments": [uploaded.id_],
-                        }],
-                        "temperature": 0.1,
-                    })
-                    payload = _extract_json(answer.choices[0].message.content)
-                    payload["photoIndex"] = index
-                    results.append(payload)
-
-                except Exception as exc:
-                    logger.error(f"GigaChat, лот {lot_number}, фото {index}: {exc}")
-                    results.append({"photoIndex": index, "error": str(exc)})
-
+        results = call(images[:MAX_PHOTOS])
     except Exception as exc:
-        logger.error(f"GigaChat недоступен для лота {lot_number}: {exc}")
-        return {"available": False, "reason": str(exc)}
+        logger.error(f"{PROVIDER} недоступен для лота {lot_number}: {exc}")
+        return {"available": False, "provider": PROVIDER, "reason": str(exc)}
 
     usable = [r for r in results if "error" not in r]
     if not usable:
-        return {"available": False, "reason": "ни один снимок не разобран",
-                "perPhoto": results}
+        return {"available": False, "provider": PROVIDER,
+                "reason": "ни один снимок не разобран", "perPhoto": results}
 
     order = {"light": 0, "moderate": 1, "severe": 2}
     severities = [r.get("severity") for r in usable if r.get("severity") in order]
@@ -123,7 +170,8 @@ def analyze(images, lot_number="unknown"):
 
     return {
         "available": True,
-        "model": MODEL,
+        "provider": PROVIDER,
+        "model": model_name,
         "photosAnalyzed": len(usable),
         "visibleDamage": collect("visibleDamage"),
         "damageZones": collect("damageZones"),

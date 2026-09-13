@@ -1,6 +1,7 @@
 --extra-index-url https://download.pytorch.org/whl/cpu
 
 ultralytics==8.3.40
+google-genai==2.23.0
 gigachat==0.2.3
 pillow==10.1.0
 requests==2.31.0

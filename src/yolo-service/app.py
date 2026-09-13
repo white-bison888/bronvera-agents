@@ -14,7 +14,7 @@ from ultralytics import YOLO
 from PIL import Image
 import logging
 
-import gigachat_vision
+import vision
 
 app = Flask(__name__)
 CORS(app)
@@ -161,7 +161,7 @@ def assess_endpoint():
 
         # Запускается всегда, а не только когда детектор что-то нашёл: машина
         # без крыши не попадает ни в один его класс и даёт пустой результат.
-        vision = gigachat_vision.analyze(image_bytes, lot_number)
+        vision_result = vision.analyze(image_bytes, lot_number)
 
         totals = {}
         for r in results:
@@ -173,7 +173,7 @@ def assess_endpoint():
             "lotNumber": lot_number,
             "photosAnalyzed": len(photos),
             "assessments": results,
-            "vision": vision,
+            "vision": vision_result,
             "summary": {
                 "totalDamages": sum(r.get('totalDamages', 0) for r in results),
                 "damageTypes": totals,
