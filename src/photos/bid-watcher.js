@@ -179,7 +179,25 @@ class BidWatcher {
           // Страница уже открыта — дату торгов снимаем тем же заходом.
           const { saleDate } = parseAuctionTiming(pageText);
 
-          if (Number.isFinite(bid) || saleDate) {
+          /*
+           * После закрытия площадка показывает итог: "Final bid $10,600 USD".
+           * Рядом та же сумма в евро и злотых, поэтому требуем USD — иначе
+           * в историю попадёт другая валюта под видом долларов.
+           */
+          const finalMatch = pageText.match(
+            /Final bid[\s\S]{0,20}?\$\s?([\d,]+)\s*USD/i
+          );
+
+          const finalBid = finalMatch
+            ? Number(finalMatch[1].replace(/,/g, ""))
+            : null;
+
+          if (Number.isFinite(finalBid)) {
+            this.saveActual(item.lot, finalBid);
+
+            console.log(`   ${item.lot}: торги завершены, ушёл за $${finalBid}`);
+          }
+          else if (Number.isFinite(bid) || saleDate) {
             this.saveBid(item.lot, bid, saleDate, item.msToClose);
 
             console.log(
@@ -199,6 +217,23 @@ class BidWatcher {
     }
 
     this.lastCheck = new Date().toISOString();
+  }
+
+  /*
+   * Цена торгов, снятая с площадки. Источник помечаем: вручную вписанная
+   * цифра и снятая автоматически — разные по надёжности, и при разборе
+   * расхождений это нужно различать.
+   */
+  saveActual(lotNumber, soldPriceUsd) {
+    try {
+      history.setActual(lotNumber, {
+        soldPriceUsd,
+        soldAt: new Date().toISOString(),
+        note: "снято с bid.cars автоматически",
+      });
+    } catch (error) {
+      console.error(`   ${lotNumber}: цена торгов не сохранена — ${error.message}`);
+    }
   }
 
   saveBid(lotNumber, bid, saleDate, msToClose) {
