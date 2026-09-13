@@ -21,22 +21,24 @@ CORS(app)
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Загрузим YOLO модель (первый запуск может занять время)
+MODEL_PATH = os.getenv('MODEL_PATH', '/app/car-damage.pt')
+CONF_THRESHOLD = float(os.getenv('CONF_THRESHOLD', '0.35'))
+
 try:
-    model = YOLO('yolov8n.pt')  # nano модель - быстрая и лёгкая
-    logger.info("✅ YOLO модель загружена успешно")
+    model = YOLO(MODEL_PATH)
+    logger.info(f"✅ Модель загружена: {MODEL_PATH}, классы: {model.names}")
 except Exception as e:
-    logger.error(f"❌ Ошибка загрузки YOLO: {e}")
+    logger.error(f"❌ Ошибка загрузки модели: {e}")
     model = None
 
-# Классы повреждений которые ищем
+# Классы дообученной модели car-dd → русские названия
 DAMAGE_CLASSES = {
     'dent': 'вмятина',
-    'rust': 'ржавчина',
-    'crack': 'трещина',
-    'broken_glass': 'разбитое стекло',
     'scratch': 'царапина',
-    'collision': 'повреждение от столкновения'
+    'crack': 'трещина',
+    'glass shatter': 'разбитое стекло',
+    'lamp broken': 'разбитая фара',
+    'tire flat': 'спущенное колесо',
 }
 
 def assess_photo(image_data, lot_number="unknown"):
@@ -66,7 +68,7 @@ def assess_photo(image_data, lot_number="unknown"):
         img = Image.open(BytesIO(image_data))
 
         # Запускаем YOLO детекцию
-        results = model(img, conf=0.3)  # confidence threshold 30%
+        results = model(img, conf=CONF_THRESHOLD)
 
         # Парсим результаты
         detections = []
@@ -77,26 +79,21 @@ def assess_photo(image_data, lot_number="unknown"):
                 cls_id = int(box.cls[0])
                 confidence = float(box.conf[0])
 
-                # YOLO классы (ищем релевантные повреждениям)
-                class_name = result.names[cls_id] if cls_id in result.names else f"class_{cls_id}"
+                damage_type = result.names.get(cls_id, f"class_{cls_id}").lower()
 
-                # Переводим в наши категории
-                damage_type = class_name.lower()
+                detections.append({
+                    "type": damage_type,
+                    "label": DAMAGE_CLASSES.get(damage_type, damage_type),
+                    "confidence": round(confidence, 2),
+                    "coordinates": {
+                        "x": float(box.xywh[0][0]),
+                        "y": float(box.xywh[0][1]),
+                        "width": float(box.xywh[0][2]),
+                        "height": float(box.xywh[0][3])
+                    }
+                })
 
-                if confidence > 0.5:  # Only high-confidence detections
-                    detections.append({
-                        "type": damage_type,
-                        "confidence": round(confidence, 2),
-                        "coordinates": {
-                            "x": float(box.xywh[0][0]),
-                            "y": float(box.xywh[0][1]),
-                            "width": float(box.xywh[0][2]),
-                            "height": float(box.xywh[0][3])
-                        }
-                    })
-
-                    # Суммируем по типам
-                    damage_summary[damage_type] = damage_summary.get(damage_type, 0) + 1
+                damage_summary[damage_type] = damage_summary.get(damage_type, 0) + 1
 
         # Определяем серьёзность повреждений
         severity = "light"
@@ -183,6 +180,8 @@ def health():
     return jsonify({
         "status": "healthy",
         "yolo_loaded": model is not None,
+        "model": MODEL_PATH,
+        "classes": sorted(model.names.values()) if model else [],
         "service": "YOLO Photo Assessor v1.0"
     }), 200
 

@@ -21,6 +21,10 @@ COPY requirements.txt .
 # Устанавливаем Python зависимости
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Веса модели, дообученной на повреждениях кузова (crack/dent/glass shatter/lamp broken/scratch/tire flat)
+RUN curl -fsSL -o /app/car-damage.pt \
+    https://huggingface.co/harpreetsahota/car-dd-segmentation-yolov11/resolve/main/best.pt
+
 # Копируем приложение
 COPY app.py .
 
