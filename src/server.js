@@ -121,6 +121,9 @@ app.post("/api/cars/search", async (req, res) => {
       filters: { make, models, yearFrom, yearTo, mileageMin, mileageMax,
         fuelTypes, bodyStyles, driveTypes, transmissions, startCodes, auctionTypes },
       found: Array.isArray(result.listings) ? result.listings.length : 0,
+      // Сколько лотов вообще просмотрели и сколько отсеяли обязательные
+      // требования — без этих чисел короткая выдача выглядит как сбой.
+      requirements: bidCars.lastRequirementStats || null,
       at: new Date().toISOString(),
     };
 
@@ -217,8 +220,8 @@ app.post("/api/economics/max-bid", (req, res) => {
              * Пока нет разбора снимков, он не подтверждён, поэтому
              * в историю уходит состояние ожидания, а не BUY/WATCH/SKIP.
              */
-            decision: result.verdict === "PENDING_PHOTOS"
-              ? "PENDING_PHOTOS"
+            decision: result.verdict
+              ? result.verdict
               : vehicle.decision || null,
             decisionHeld: result.verdict === "PENDING_PHOTOS"
               ? vehicle.decision || null
@@ -630,21 +633,16 @@ app.get("/api/history/summary", (req, res) => {
 
 app.post("/api/history/market-reference", (req, res) => {
   const { lotNumber, polandPriceUsd, belarusPriceUsd } = req.body || {};
-
   if (!lotNumber) {
     return res.status(400).json({ success: false, error: "lotNumber обязателен" });
   }
-
-  const toNumber = (value) => {
-    const n = Number(value);
-
-    return Number.isFinite(n) && n > 0 ? n : undefined;
-  };
-
-  const updated = history.setMarketReference(lotNumber, {
-    polandPriceUsd: toNumber(polandPriceUsd),
-    belarusPriceUsd: toNumber(belarusPriceUsd),
-  });
+  let reference;
+  try {
+    reference = require("./history/market-reference").normalizeMarketReference(req.body || {});
+  } catch (error) {
+    return res.status(400).json({ success: false, error: error.message });
+  }
+  const updated = history.setMarketReference(lotNumber, reference);
 
   if (updated === 0) {
     return res.status(404).json({

@@ -71,7 +71,15 @@ class LotPhotoCollector {
       options.photoDir ||
       path.join(process.cwd(), "data", "photos");
 
-    this.maxPhotosPerLot = options.maxPhotosPerLot || 6;
+    /*
+     * Ноль означает «все, что есть на странице». Ограничение в шесть
+     * ставили ради экономии на платной модели, но у лота бывает и двадцать
+     * снимков, а сорванная крыша может оказаться на семнадцатом.
+     * Ограничивать надо разбор, а не сбор: скачанные файлы бесплатны.
+     */
+    this.maxPhotosPerLot = Number.isFinite(options.maxPhotosPerLot)
+      ? options.maxPhotosPerLot
+      : 0;
 
     /*
      * Bid.Cars отдаёт 403 уже со второго-третьего лота подряд, поэтому
@@ -107,7 +115,11 @@ class LotPhotoCollector {
   extractPhotoUrls(html) {
     const found = html.match(PHOTO_URL_PATTERN) || [];
 
-    return [...new Set(found)].slice(0, this.maxPhotosPerLot);
+    const unique = [...new Set(found)];
+
+    return this.maxPhotosPerLot > 0
+      ? unique.slice(0, this.maxPhotosPerLot)
+      : unique;
   }
 
   async extractLotDetails(page) {
@@ -496,7 +508,8 @@ class LotPhotoCollector {
             files = await this.screenshotPhotos(
               page,
               key,
-              this.maxPhotosPerLot
+              // Снимки с экрана берём ограниченно: это медленный запасной путь.
+              this.maxPhotosPerLot > 0 ? this.maxPhotosPerLot : 12
             );
 
             if (files.length > 0)

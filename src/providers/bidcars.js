@@ -1968,6 +1968,18 @@ class BidCarsProvider {
         )
     );
 
+    /*
+     * Отсев видно только в логе, а пользователю нужно понимать, почему
+     * из трёх сотен лотов до него дошло два десятка — иначе пустая выдача
+     * неотличима от поломки.
+     */
+    this.lastRequirementStats = {
+      scanned: candidates.length,
+      eligible: eligible.length,
+      rejected: candidates.length - eligible.length,
+      at: new Date().toISOString(),
+    };
+
     if (
       candidates.length > 0 &&
       eligible.length < candidates.length
