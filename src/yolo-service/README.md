@@ -1,185 +1,145 @@
 # YOLO Photo Assessment Service
 
-Локальный сервис для анализа фотографий автомобилей с помощью YOLO v8.
+Локальный сервис для поиска повреждений кузова на фотографиях автомобиля.
+Заменяет платный Vision API на бесплатную модель, работающую на своём сервере.
 
-**Заменяет:** дорогой Claude Vision API на локальное YOLO решение  
-**Детектирует:** вмятины, ржавчину, трещины, разбитое стекло, царапины
+## Что модель умеет и чего не умеет
 
-## 🚀 Быстрый старт
+Используется `car-damage.pt` — YOLO11, дообученная на датасете CarDD.
+Веса скачиваются на этапе сборки образа, в git не хранятся.
 
-### На MacBook (локально для тестирования):
+**Распознаёт шесть типов дефектов:**
 
-```bash
-cd /Users/nikitaborisenko/Documents/Projects/bronvera-agents/src/yolo-service
+| Класс модели | Русское название |
+|---|---|
+| `dent` | вмятина |
+| `scratch` | царапина |
+| `crack` | трещина |
+| `glass shatter` | разбитое стекло |
+| `lamp broken` | разбитая фара |
+| `tire flat` | спущенное колесо |
 
-# Установим зависимости
-pip install -r requirements.txt
+**Не распознаёт ржавчину и коррозию** — такого класса в модели нет.
+Пустой результат означает «эти шесть типов не найдены», а не «машина целая».
+Поэтому в ответе всегда возвращается `detectableClasses` — список того,
+что вообще проверялось.
 
-# Запустим сервис
-python app.py
-```
+## Сервис не выносит вердиктов
 
-Сервис будет доступен на: `http://localhost:3001`
+Endpoint возвращает только наблюдения: что найдено, где, с какой уверенностью.
+Оценку тяжести и рекомендацию по ставке принимает агент **ASSESSOR** в Dify —
+у него есть цена, пробег, год выпуска и рыночный контекст, которых у модели нет.
 
-### На Hetzner (в Docker контейнере):
+Раньше сервис считал severity сам по количеству находок. Это убрано: подсчёт
+без учёта типа дефекта приравнивал три царапины к разбитому стеклу.
 
-```bash
-# Перейдём в нужную директорию
-cd /opt/bronvera-agents/src/yolo-service
+## API
 
-# Создадим Docker image
-docker build -t yolo-assessor:latest .
+### POST `/api/photos/assess`
 
-# Запустим контейнер
-docker run -d \
-  --name yolo-assessor \
-  -p 3001:3001 \
-  --memory="2g" \
-  yolo-assessor:latest
-```
-
-## 📊 API Endpoints
-
-### 1. POST `/api/photos/assess`
-
-Анализирует фотографии машины.
-
-**Request:**
+**Запрос:**
 ```json
 {
-  "photos": ["base64_encoded_image_1", "base64_encoded_image_2"],
+  "photos": ["base64_изображение_1", "base64_изображение_2"],
   "lotNumber": "12345678"
 }
 ```
 
-**Response:**
+**Ответ:**
 ```json
 {
   "success": true,
   "lotNumber": "12345678",
-  "photosAnalyzed": 2,
+  "photosAnalyzed": 1,
   "assessments": [
     {
       "success": true,
+      "lotNumber": "12345678",
       "detections": [
         {
-          "type": "dent",
-          "confidence": 0.87,
-          "coordinates": {
-            "x": 150,
-            "y": 200,
-            "width": 50,
-            "height": 40
-          }
+          "type": "lamp broken",
+          "label": "разбитая фара",
+          "confidence": 0.96,
+          "coordinates": { "x": 150, "y": 200, "width": 50, "height": 40 }
         }
       ],
-      "damageSummary": {
-        "dent": 2,
-        "rust": 1
-      },
-      "severity": "moderate",
-      "totalDamages": 3,
-      "assessment": {
-        "condition": "moderate",
-        "visibleDamages": ["dent", "rust"],
-        "damageCount": 3,
-        "recommendation": "INSPECT"
-      }
+      "damageSummary": { "lamp broken": 1 },
+      "totalDamages": 1,
+      "photosAnalyzed": 1
     }
-  ]
+  ],
+  "summary": {
+    "totalDamages": 1,
+    "damageTypes": { "lamp broken": 1 },
+    "detectableClasses": ["crack", "dent", "glass shatter", "lamp broken", "scratch", "tire flat"],
+    "confidenceThreshold": 0.35
+  }
 }
 ```
 
-### 2. GET `/health`
+### GET `/health`
 
-Проверяет здоровье сервиса.
-
-**Response:**
 ```json
 {
   "status": "healthy",
   "yolo_loaded": true,
+  "model": "/app/car-damage.pt",
+  "classes": ["crack", "dent", "glass shatter", "lamp broken", "scratch", "tire flat"],
   "service": "YOLO Photo Assessor v1.0"
 }
 ```
 
-## 🔧 Инструкция для Hetzner
+Список классов отдаётся намеренно: однажды сервис работал со стоковой моделью,
+которая повреждений не знала вовсе, а `/health` при этом показывал «healthy».
+Теперь подменённую модель видно сразу.
 
-### Шаг 1: Скопируй файлы на Hetzner
+## Развёртывание на Hetzner
+
+Внутри контейнера сервис слушает 3001, наружу проброшен **3002**
+(3001 на хосте занят другим процессом).
 
 ```bash
-scp -r /Users/nikitaborisenko/Documents/Projects/bronvera-agents/src/yolo-service root@2.28.54.56:/opt/bronvera-agents/src/
-```
+scp -r src/yolo-service root@2.28.54.56:/opt/bronvera-agents/src/
 
-### Шаг 2: Заходишь на сервер и запускаешь
-
-```bash
 ssh root@2.28.54.56
 cd /opt/bronvera-agents/src/yolo-service
 docker build -t yolo-assessor:latest .
-docker run -d --name yolo-assessor -p 3001:3001 --memory="2g" yolo-assessor:latest
+docker run -d --name yolo-assessor -p 3002:3001 --memory=3g yolo-assessor:latest
 
-# Проверяешь что запустилось
-docker logs yolo-assessor
-curl http://localhost:3001/health
+curl http://localhost:3002/health
 ```
 
-### Шаг 3: Обновляешь photo-assessor.js
+Dify обращается к сервису по адресу `http://host.docker.internal:3002/api/photos/assess`.
 
-В файле `/opt/bronvera-agents/src/vision/photo-assessor.js` меняешь:
-- Вместо Claude API → вызов локального YOLO
-- URL: `http://localhost:3001/api/photos/assess`
+## Настройки
 
-## ⚙️ Конфигурация
+| Переменная | По умолчанию | Смысл |
+|---|---|---|
+| `MODEL_PATH` | `/app/car-damage.pt` | путь к весам |
+| `CONF_THRESHOLD` | `0.35` | нижняя граница уверенности |
 
-### YOLO Модель
+Порог 0.35 подобран на реальных снимках: вмятины от града набирают 0.46 и при
+0.5 терялись, а на 0.1 начинают появляться ложные срабатывания с 0.17–0.21.
+Значение стоит перепроверить на своей выборке аукционных фото.
 
-Используется `yolov8n.pt` (nano версия):
-- ✅ Быстрая (можно на CPU)
-- ✅ Лёгкая (800 MB памяти)
-- ✅ Точная для нашего случая
+## Зависимости образа
 
-Если нужна высокая точность, можно изменить на `yolov8m.pt` или `yolov8l.pt`.
+`python:3.11-slim` не содержит системных библиотек, с которыми слинкован OpenCV.
+Без `libgl1` и `libglib2.0-0` контейнер падает при старте на `ImportError`,
+а Dify получает HTTP 503 — это уже случалось.
 
-### Confidence Threshold
+Torch ставится из CPU-индекса PyTorch: на CPX22 нет видеокарты, а CUDA-сборка
+раздувала образ до 9.5 ГБ. Сейчас 3.3 ГБ.
 
-Текущий порог: 0.5 (50%)
+## Лицензия
 
-Изменить в `app.py`:
-```python
-if confidence > 0.5:  # Изменить на 0.6, 0.7 и т.д.
-```
+`ultralytics` и веса CarDD распространяются под **AGPL-3.0**. Для коммерческого
+сетевого сервиса это требует раскрытия исходного кода либо покупки коммерческой
+лицензии у Ultralytics. Вопрос нужно закрыть до вывода проекта в продажу.
 
-## 📈 Производительность
+## Диагностика
 
-- **Одна фото на CPU:** ~2-5 секунд
-- **На GPU (если есть):** ~0.2-0.5 секунд
-- **Память:** ~1.5 GB (nano модель)
-
-## 🐛 Debugging
-
-### Проверь логи контейнера:
 ```bash
 docker logs -f yolo-assessor
+curl http://localhost:3002/health
 ```
-
-### Тестирование API:
-```bash
-curl http://localhost:3001/health
-
-# Тестируем с фото
-curl -X POST http://localhost:3001/api/photos/assess \
-  -H "Content-Type: application/json" \
-  -d '{"photos":[], "lotNumber":"test"}'
-```
-
-## 📝 Версия
-
-- **YOLO:** v8 (nano)
-- **Python:** 3.11
-- **Flask:** 3.0.0
-- **Дата:** 2026-09-13
-
----
-
-**Статус:** Production Ready ✅

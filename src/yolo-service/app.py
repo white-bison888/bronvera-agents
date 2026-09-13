@@ -95,27 +95,15 @@ def assess_photo(image_data, lot_number="unknown"):
 
                 damage_summary[damage_type] = damage_summary.get(damage_type, 0) + 1
 
-        # Определяем серьёзность повреждений
-        severity = "light"
-        if len(detections) > 5:
-            severity = "severe"
-        elif len(detections) > 2:
-            severity = "moderate"
-
+        # Вердикт намеренно не выносится: severity и рекомендацию определяет
+        # агент ASSESSOR, у которого есть цена, пробег и год выпуска.
         return {
             "success": True,
             "lotNumber": lot_number,
             "detections": detections,
             "damageSummary": damage_summary,
-            "severity": severity,
             "totalDamages": len(detections),
             "photosAnalyzed": 1,
-            "assessment": {
-                "condition": severity,
-                "visibleDamages": list(damage_summary.keys()),
-                "damageCount": len(detections),
-                "recommendation": "INSPECT" if len(detections) > 2 else "ACCEPTABLE"
-            }
         }
 
     except Exception as e:
@@ -153,7 +141,11 @@ def assess_endpoint():
             result = assess_photo(photo_data, lot_number)
             results.append(result)
 
-        # Объединяем результаты
+        totals = {}
+        for r in results:
+            for damage_type, count in r.get('damageSummary', {}).items():
+                totals[damage_type] = totals.get(damage_type, 0) + count
+
         combined = {
             "success": all(r.get('success', False) for r in results),
             "lotNumber": lot_number,
@@ -161,7 +153,11 @@ def assess_endpoint():
             "assessments": results,
             "summary": {
                 "totalDamages": sum(r.get('totalDamages', 0) for r in results),
-                "severity": results[0].get('severity', 'unknown') if results else 'unknown'
+                "damageTypes": totals,
+                # ASSESSOR должен знать границы модели: отсутствие класса в
+                # detectableClasses означает «не проверялось», а не «дефекта нет».
+                "detectableClasses": sorted(model.names.values()) if model else [],
+                "confidenceThreshold": CONF_THRESHOLD,
             }
         }
 
