@@ -65,32 +65,44 @@ def assess_photo(image_data, lot_number="unknown"):
             # Base64 кодированное изображение
             image_data = base64.b64decode(image_data)
 
-        img = Image.open(BytesIO(image_data))
+        img = Image.open(BytesIO(image_data)).convert("RGB")
+        img_w, img_h = img.size
 
-        # Запускаем YOLO детекцию
         results = model(img, conf=CONF_THRESHOLD)
 
-        # Парсим результаты
         detections = []
         damage_summary = {}
 
         for result in results:
-            for box in result.boxes:
+            masks = getattr(result, "masks", None)
+
+            for i, box in enumerate(result.boxes):
                 cls_id = int(box.cls[0])
                 confidence = float(box.conf[0])
-
                 damage_type = result.names.get(cls_id, f"class_{cls_id}").lower()
+
+                x, y, w, h = (float(v) for v in box.xywh[0])
+
+                # Модель сегментационная, поэтому площадь считается по маске:
+                # у косой царапины описанная рамка почти вся пустая и завышает размер.
+                if masks is not None and i < len(masks.data):
+                    mask = masks.data[i]
+                    mask_h, mask_w = mask.shape
+                    area_share = float(mask.sum()) / float(mask_w * mask_h)
+                else:
+                    area_share = (w * h) / float(img_w * img_h)
 
                 detections.append({
                     "type": damage_type,
                     "label": DAMAGE_CLASSES.get(damage_type, damage_type),
                     "confidence": round(confidence, 2),
+                    "areaShare": round(area_share, 4),
                     "coordinates": {
-                        "x": float(box.xywh[0][0]),
-                        "y": float(box.xywh[0][1]),
-                        "width": float(box.xywh[0][2]),
-                        "height": float(box.xywh[0][3])
-                    }
+                        "x": round(x),
+                        "y": round(y),
+                        "width": round(w),
+                        "height": round(h),
+                    },
                 })
 
                 damage_summary[damage_type] = damage_summary.get(damage_type, 0) + 1
@@ -100,9 +112,12 @@ def assess_photo(image_data, lot_number="unknown"):
         return {
             "success": True,
             "lotNumber": lot_number,
+            "imageSize": {"width": img_w, "height": img_h},
             "detections": detections,
             "damageSummary": damage_summary,
             "totalDamages": len(detections),
+            "maxConfidence": round(max((d["confidence"] for d in detections), default=0.0), 2),
+            "largestDamageShare": round(max((d["areaShare"] for d in detections), default=0.0), 4),
             "photosAnalyzed": 1,
         }
 
@@ -154,9 +169,19 @@ def assess_endpoint():
             "summary": {
                 "totalDamages": sum(r.get('totalDamages', 0) for r in results),
                 "damageTypes": totals,
+                "photosWithDamage": sum(1 for r in results if r.get('totalDamages')),
+                "maxConfidence": round(max((r.get('maxConfidence', 0.0) for r in results), default=0.0), 2),
+                "largestDamageShare": round(max((r.get('largestDamageShare', 0.0) for r in results), default=0.0), 4),
                 # ASSESSOR должен знать границы модели: отсутствие класса в
                 # detectableClasses означает «не проверялось», а не «дефекта нет».
                 "detectableClasses": sorted(model.names.values()) if model else [],
+                "notDetectable": [
+                    "ржавчина и коррозия",
+                    "состояние силовой структуры",
+                    "срабатывание подушек безопасности",
+                    "зона высоковольтной батареи",
+                    "стоимость ремонта",
+                ],
                 "confidenceThreshold": CONF_THRESHOLD,
             }
         }
