@@ -207,28 +207,94 @@ const buildSummary = () => {
         vehicle: [entry.year, entry.make, entry.model]
           .filter(Boolean)
           .join(" "),
+        url: entry.url || null,
         decision: entry.decision,
         maxBidUsd: entry.maxBidUsd,
         soldPriceUsd: sold,
         gapUsd: gap,
         gapPct: sold > 0 ? Math.round((gap / sold) * 100) : null,
         outcome: gap >= 0 ? "missedOpportunity" : "correctlySkipped",
+        /*
+         * Потолок ноль означает «не окупается ни при какой цене». Разрыв
+         * у такого лота всегда −100% и промахом прогноза не является:
+         * в среднем он утягивает перекос вниз и создаёт впечатление,
+         * будто формула осторожничает, хотя лот просто отвергнут.
+         */
+        viable: entry.viable === true && entry.maxBidUsd > 0,
         repairCostSource: entry.repairCostSource,
+        repairCostUsd: entry.repairCostUsd ?? null,
+        damageType: entry.damageType || null,
+        photoStatus: entry.photoStatus || null,
+        // Цену торгов могли вписать руками, а могли снять с площадки.
+        actualSource: entry.actual.note || null,
       };
-    });
+    })
+    // Крупные расхождения важнее: с них начинают разбор.
+    .sort((a, b) => Math.abs(b.gapUsd) - Math.abs(a.gapUsd));
 
-  const deviations = comparisons
+  /*
+   * Разрез нужен для настройки формулы: систематический перекос в одну
+   * сторону у конкретного источника оценки ремонта или типа повреждения
+   * означает, что ошибается не отдельный лот, а само правило.
+   *
+   * Знак важен не меньше величины: стабильный плюс — потолок щедрый,
+   * стабильный минус — слишком осторожный. Среднее по модулю их бы
+   * смешало и показало «всё одинаково плохо».
+   */
+  // Считаем только по лотам с рассчитанным потолком: отвергнутые
+  // «не окупается» искажают любое среднее.
+  const forecast = comparisons.filter(item => item.viable);
+
+  const groupBy = (field) => {
+    const groups = {};
+
+    for (const item of forecast) {
+      const key = item[field] || "не указан";
+
+      (groups[key] = groups[key] || []).push(item);
+    }
+
+    return Object.entries(groups)
+      .map(([key, items]) => {
+        const pcts = items.map(i => i.gapPct).filter(Number.isFinite);
+        const sum = pcts.reduce((a, b) => a + b, 0);
+
+        return {
+          key,
+          count: items.length,
+          avgGapPct: pcts.length ? Math.round(sum / pcts.length) : null,
+          avgAbsGapPct: pcts.length
+            ? Math.round(pcts.reduce((a, b) => a + Math.abs(b), 0) / pcts.length)
+            : null,
+          missed: items.filter(i => i.outcome === "missedOpportunity").length,
+        };
+      })
+      .sort((a, b) => b.count - a.count);
+  };
+
+  const deviations = forecast
     .map(item => Math.abs(item.gapPct))
     .filter(Number.isFinite);
+
+  const signed = forecast.map(item => item.gapPct).filter(Number.isFinite);
 
   return {
     totalEntries: entries.length,
     lotsTracked: new Set(entries.map(entry => entry.lotNumber)).size,
     withActualPrice: withActual.length,
+    // Сколько лотов реально участвует в оценке прогноза.
+    forecastCount: forecast.length,
+    notViableCount: comparisons.length - forecast.length,
     comparisons,
     averageDeviationPct: deviations.length
       ? Math.round(deviations.reduce((a, b) => a + b, 0) / deviations.length)
       : null,
+    // Со знаком: показывает не «насколько мажем», а «в какую сторону».
+    averageBiasPct: signed.length
+      ? Math.round(signed.reduce((a, b) => a + b, 0) / signed.length)
+      : null,
+    byRepairSource: groupBy("repairCostSource"),
+    byDamageType: groupBy("damageType"),
   };
 };
 
