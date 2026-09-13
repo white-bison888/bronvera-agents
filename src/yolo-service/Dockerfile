@@ -26,7 +26,7 @@ RUN curl -fsSL -o /app/car-damage.pt \
     https://huggingface.co/harpreetsahota/car-dd-segmentation-yolov11/resolve/main/best.pt
 
 # Копируем приложение
-COPY app.py .
+COPY app.py gigachat_vision.py ./
 
 # Предварительно загружаем YOLO модель (optional, экономит время при первом запуске)
 # RUN python -c "from ultralytics import YOLO; YOLO('yolov8n.pt')"

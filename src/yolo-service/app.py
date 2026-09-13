@@ -14,6 +14,8 @@ from ultralytics import YOLO
 from PIL import Image
 import logging
 
+import gigachat_vision
+
 app = Flask(__name__)
 CORS(app)
 
@@ -150,11 +152,16 @@ def assess_endpoint():
                 "lotNumber": lot_number
             }), 400
 
-        # Анализируем первое фото (или все если нужно)
-        results = []
+        image_bytes = []
         for photo_data in photos:
-            result = assess_photo(photo_data, lot_number)
-            results.append(result)
+            image_bytes.append(
+                base64.b64decode(photo_data) if isinstance(photo_data, str) else photo_data)
+
+        results = [assess_photo(raw, lot_number) for raw in image_bytes]
+
+        # Запускается всегда, а не только когда детектор что-то нашёл: машина
+        # без крыши не попадает ни в один его класс и даёт пустой результат.
+        vision = gigachat_vision.analyze(image_bytes, lot_number)
 
         totals = {}
         for r in results:
@@ -166,6 +173,7 @@ def assess_endpoint():
             "lotNumber": lot_number,
             "photosAnalyzed": len(photos),
             "assessments": results,
+            "vision": vision,
             "summary": {
                 "totalDamages": sum(r.get('totalDamages', 0) for r in results),
                 "damageTypes": totals,
@@ -175,12 +183,12 @@ def assess_endpoint():
                 # ASSESSOR должен знать границы модели: отсутствие класса в
                 # detectableClasses означает «не проверялось», а не «дефекта нет».
                 "detectableClasses": sorted(model.names.values()) if model else [],
-                "notDetectable": [
+                "detectorBlindSpots": [
                     "ржавчина и коррозия",
+                    "отсутствующие детали и сорванные панели",
                     "состояние силовой структуры",
                     "срабатывание подушек безопасности",
-                    "зона высоковольтной батареи",
-                    "стоимость ремонта",
+                    "следы огня и затопления",
                 ],
                 "confidenceThreshold": CONF_THRESHOLD,
             }
