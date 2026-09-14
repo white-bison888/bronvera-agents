@@ -1,17 +1,19 @@
 const defaultRates = require("./rates");
 
 /*
+ * РАСЧЁТ СДЕЛКИ: аукцион США → продажа в Беларуси.
+ *
+ * Отвечает на два вопроса. Первый — сколько мы заработаем, если купим
+ * по цене, которую прогнозирует bid.cars. Второй — до какой ставки
+ * сделка остаётся годной, то есть прибыль не меньше minProfitUsd.
+ *
  * Пошлина и НДС считаются от таможенной стоимости, в которую входит
- * сама цена покупки. Поэтому «сколько можно поставить» нельзя получить
- * простым вычитанием — величина стоит по обе стороны равенства.
+ * сама цена покупки, поэтому потолок выражается уравнением:
  *
- * Уравнение разворачивается так:
+ *   продажа − прибыль − (ремонт + комиссии + сборы) = ТС × (1 + пошлина) × (1 + НДС)
+ *   ТС = цена × (1 + доля сбора аукциона) + фикс. сбор + доставка до Минска
  *
- *   выручка − резерв − прибыль − ремонт − местные расходы = ввоз × K
- *   K = (1 + пошлина) × (1 + НДС)
- *   ввоз = цена × (1 + сбор аукциона) + фикс.сборы + перевозки
- *
- * Отсюда цена выражается в один шаг, без подбора.
+ * Всё линейно, поэтому цена находится в один шаг, без подбора.
  */
 
 /*
@@ -91,6 +93,46 @@ const hasPhotoAssessment = (photo) => {
     || Number.isFinite(photo.repairCostMax);
 };
 
+/*
+ * Возраст считаем по модельному году: точной даты выпуска в данных лота
+ * нет. Машина ровно на границе льготы помечается — её дату выпуска нужно
+ * проверить по VIN или документам.
+ */
+const importTaxes = (vehicle, rates, now = new Date()) => {
+  const year = Number(vehicle.year);
+  const ageYears = Number.isFinite(year) ? now.getFullYear() - year : null;
+
+  const vatExempt = ageYears !== null && ageYears <= rates.evVatExemptMaxAgeYears;
+  const recyclingByn = ageYears !== null && ageYears <= 3
+    ? rates.recyclingFeeByn.upTo3Years
+    : rates.recyclingFeeByn.older;
+
+  return {
+    ageYears,
+    dutyRate: rates.evDutyFreeQuota ? 0 : rates.dutyRate,
+    vatRate: vatExempt ? 0 : rates.vatRate,
+    vatExempt,
+    vatAgeBorderline: ageYears === rates.evVatExemptMaxAgeYears,
+    recyclingFeeUsd: recyclingByn / rates.bynPerUsd,
+    customsFeeUsd: rates.customsFeeByn / rates.bynPerUsd,
+  };
+};
+
+const readForecast = (vehicle, rates) => {
+  const min = Number(vehicle.auctionEstimateMin);
+  const max = Number(vehicle.auctionEstimateMax);
+
+  if (!Number.isFinite(min) || !Number.isFinite(max) || min <= 0 || max < min)
+    return null;
+
+  return {
+    minUsd: min,
+    maxUsd: max,
+    expectedUsd: min + rates.forecastPosition * (max - min),
+    position: rates.forecastPosition,
+  };
+};
+
 const calculateMaxBid = (vehicle, overrides = {}) => {
   const rates = { ...defaultRates, ...overrides };
 
@@ -154,94 +196,123 @@ const calculateMaxBid = (vehicle, overrides = {}) => {
     damageType = norm.damageType;
   }
 
+  const taxes = importTaxes(vehicle, rates);
+  const resaleValue = marketValue * (1 - rates.resaleDiscount);
+  const delivery = rates.usTransportUsd + rates.oceanFreightUsd + rates.portToMinskUsd;
+
+  // Всё, что не зависит от цены покупки и не входит в таможенную стоимость.
+  const fixedCosts = repairCost + rates.bidcarsFeeUsd + rates.localCostsUsd
+    + taxes.recyclingFeeUsd + taxes.customsFeeUsd;
+
+  const costsAt = (price) => {
+    const auctionFees = price * rates.auctionFeeRate + rates.auctionFeeFixed;
+    const customsValue = price + auctionFees + delivery;
+    const duty = customsValue * taxes.dutyRate;
+    const vat = (customsValue + duty) * taxes.vatRate;
+    const total = customsValue + duty + vat + fixedCosts;
+
+    return { price, auctionFees, customsValue, duty, vat, total, profit: resaleValue - total };
+  };
+
+  const taxMultiplier = (1 + taxes.dutyRate) * (1 + taxes.vatRate);
+  const customsValueAtCeiling = (resaleValue - rates.minProfitUsd - fixedCosts) / taxMultiplier;
+  const ceiling = (customsValueAtCeiling - rates.auctionFeeFixed - delivery) / (1 + rates.auctionFeeRate);
+
+  const forecast = readForecast(vehicle, rates);
+
+  const profit = forecast
+    ? {
+        atMinUsd: round(costsAt(forecast.minUsd).profit),
+        atExpectedUsd: round(costsAt(forecast.expectedUsd).profit),
+        atMaxUsd: round(costsAt(forecast.maxUsd).profit),
+      }
+    : null;
+
   /*
-   * Если известна цена живого аналога в Польше, она надёжнее любых
-   * коэффициентов — это факт рынка, а не пересчёт чужих объявлений.
+   * Решение по прогнозу bid.cars (выбор Mikita 14.09):
+   *   BUY   — прибыль не меньше порога даже при верхней границе прогноза;
+   *   WATCH — только при нижней;
+   *   SKIP  — не набирается ни при какой цене из прогноза.
+   * Без прогноза вердикт не выносим: остаётся решение аналитиков.
    */
-  const localMarketValue = Number.isFinite(vehicle.polandPriceUsd)
-    ? vehicle.polandPriceUsd
-    : marketValue * rates.polandMarketFactor;
+  const maxBid = Number.isFinite(ceiling) ? Math.max(0, ceiling) : 0;
 
-  const resaleValue = localMarketValue * rates.resaleFactor;
-  const riskReserve = resaleValue * rates.riskReserveRate;
-  const targetProfit = resaleValue * rates.targetProfitRate;
+  let verdict = null;
 
-  const importBudget
-    = resaleValue - riskReserve - targetProfit - repairCost - rates.localCostsUsd;
+  if (maxBid <= 0)
+    verdict = "SKIP";
+  else if (forecast)
+    verdict = maxBid >= forecast.maxUsd ? "BUY" : maxBid >= forecast.minUsd ? "WATCH" : "SKIP";
 
-  const taxMultiplier = (1 + rates.dutyRate) * (1 + rates.vatRate);
-  const customsValue = importBudget / taxMultiplier;
+  const at = costsAt(forecast ? forecast.expectedUsd : maxBid);
 
-  const shipping = rates.usTransportUsd + rates.oceanFreightUsd;
-  const maxBid
-    = (customsValue - rates.auctionFeeFixed - shipping) / (1 + rates.auctionFeeRate);
-
-  if (!Number.isFinite(maxBid) || maxBid <= 0) {
-    return {
-      lotNumber: vehicle.lotNumber || null,
-      maxBidUsd: 0,
-      viable: false,
-      verdict: "SKIP",
-      photoStatus: hasPhotoAssessment(photo) ? "ok" : "skipped",
-      reason:
-        "Расходы съедают всю выручку — лот не окупается даже при нулевой ставке",
-      repairCostSource,
-      damageType,
-      breakdown: {
-        resaleValueUsd: round(resaleValue),
-        repairCostUsd: round(repairCost),
-      },
-    };
-  }
-
-  const auctionFees = maxBid * rates.auctionFeeRate + rates.auctionFeeFixed;
-  const duty = customsValue * rates.dutyRate;
-  const vat = (customsValue + duty) * rates.vatRate;
+  const reason = maxBid <= 0
+    ? `Расходы съедают всю выручку — прибыли $${rates.minProfitUsd} нет даже при нулевой ставке`
+    : !forecast
+      ? "Нет прогноза цены bid.cars — вердикт по формуле не выносится"
+      : verdict === "BUY"
+        ? `Годно даже при верхней границе прогноза: потолок $${round(maxBid)} ≥ $${forecast.maxUsd}`
+        : verdict === "WATCH"
+          ? `Годно только в нижней части прогноза: потолок $${round(maxBid)} из $${forecast.minUsd}–${forecast.maxUsd}`
+          : `Прогноз bid.cars $${forecast.minUsd}–${forecast.maxUsd} выше потолка $${round(maxBid)}`;
 
   return {
     lotNumber: vehicle.lotNumber || null,
     maxBidUsd: round(maxBid),
     currency: "USD",
-    viable: true,
+    viable: maxBid > 0,
+    verdict,
+    reason,
     photoStatus: hasPhotoAssessment(photo) ? "ok" : "skipped",
     photosAnalyzed: photo?.photosAnalyzed ?? null,
     repairCostSource,
     damageType,
+    forecast: forecast
+      ? { ...forecast, expectedUsd: round(forecast.expectedUsd) }
+      : null,
+    profit,
+    // Раскладка при ожидаемой цене покупки, а без прогноза — при потолке.
     breakdown: {
       marketValueUsd: round(marketValue),
-      localMarketValueUsd: round(localMarketValue),
       resaleValueUsd: round(resaleValue),
+      purchasePriceUsd: round(at.price),
       repairCostUsd: round(repairCost),
-      auctionFeesUsd: round(auctionFees),
+      auctionFeesUsd: round(at.auctionFees),
       usTransportUsd: rates.usTransportUsd,
       oceanFreightUsd: rates.oceanFreightUsd,
-      customsDutyUsd: round(duty),
-      vatUsd: round(vat),
+      portToMinskUsd: rates.portToMinskUsd,
+      bidcarsFeeUsd: rates.bidcarsFeeUsd,
+      customsValueUsd: round(at.customsValue),
+      customsDutyUsd: round(at.duty),
+      vatUsd: round(at.vat),
+      recyclingFeeUsd: round(taxes.recyclingFeeUsd),
+      customsFeeUsd: round(taxes.customsFeeUsd),
       localCostsUsd: rates.localCostsUsd,
-      riskReserveUsd: round(riskReserve),
-      targetProfitUsd: round(targetProfit),
-      totalLandedCostUsd: round(
-        maxBid + auctionFees + shipping + duty + vat + repairCost + rates.localCostsUsd,
-      ),
+      totalLandedCostUsd: round(at.total),
+      profitUsd: round(at.profit),
     },
-    // Все ставки целиком: без них таблица расходов остаётся набором
-    // чисел, который нечем проверить и не с чем спорить.
+    // Все ставки целиком: без них раскладка остаётся набором чисел,
+    // который нечем проверить и не с чем спорить.
     assumptions: {
-      polandMarketFactor: rates.polandMarketFactor,
-      resaleFactor: rates.resaleFactor,
+      market: "Беларусь, ввоз компанией",
+      forecastPosition: rates.forecastPosition,
+      minProfitUsd: rates.minProfitUsd,
+      resaleDiscount: rates.resaleDiscount,
       repairCostBasis: rates.repairCostBasis,
-      localPriceSource: Number.isFinite(vehicle.polandPriceUsd)
-        ? "цена аналога в Польше, введена вручную"
-        : "рыночная цена Беларуси с поправкой на Польшу",
-      targetProfitRate: rates.targetProfitRate,
-      riskReserveRate: rates.riskReserveRate,
       auctionFeeRate: rates.auctionFeeRate,
       auctionFeeFixed: rates.auctionFeeFixed,
       usTransportUsd: rates.usTransportUsd,
       oceanFreightUsd: rates.oceanFreightUsd,
-      dutyRate: rates.dutyRate,
-      vatRate: rates.vatRate,
+      portToMinskUsd: rates.portToMinskUsd,
+      bidcarsFeeUsd: rates.bidcarsFeeUsd,
       localCostsUsd: rates.localCostsUsd,
+      dutyRate: taxes.dutyRate,
+      evDutyFreeQuota: rates.evDutyFreeQuota,
+      vatRate: taxes.vatRate,
+      vatExempt: taxes.vatExempt,
+      vatAgeBorderline: taxes.vatAgeBorderline,
+      ageYears: taxes.ageYears,
+      bynPerUsd: rates.bynPerUsd,
     },
   };
 };

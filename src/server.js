@@ -214,6 +214,10 @@ app.post("/api/economics/max-bid", (req, res) => {
             damageType: result.damageType || null,
             maxBidUsd: result.maxBidUsd ?? null,
             viable: result.viable === true,
+            // Прогноз bid.cars и прибыль при нём — основа решения.
+            forecast: result.forecast || null,
+            profit: result.profit || null,
+            verdictReason: result.reason || null,
             // Без раскладки нельзя объяснить, почему потолок именно такой.
             breakdown: result.breakdown || null,
             assumptions: result.assumptions || null,
@@ -221,14 +225,15 @@ app.post("/api/economics/max-bid", (req, res) => {
             photoStatus: result.photoStatus || null,
             photosAnalyzed: result.photosAnalyzed ?? null,
             /*
-             * Вердикт ORCHESTRATOR строится по тексту объявления.
-             * Пока нет разбора снимков, он не подтверждён, поэтому
-             * в историю уходит состояние ожидания, а не BUY/WATCH/SKIP.
+             * Решение выносит формула по прогнозу bid.cars (выбор Mikita
+             * 14.09). Вердикт ORCHESTRATOR остаётся, только когда прогноза
+             * нет. Пока нет снимков или цены рынка, в историю уходит
+             * состояние ожидания, а вердикт аналитиков придерживается.
              */
             decision: result.verdict
               ? result.verdict
               : vehicle.decision || null,
-            decisionHeld: result.verdict === "PENDING_PHOTOS"
+            decisionHeld: ["PENDING_PHOTOS", "NEEDS_MARKET_DATA"].includes(result.verdict)
               ? vehicle.decision || null
               : null,
             finalScore: vehicle.finalScore ?? null,
