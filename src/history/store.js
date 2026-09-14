@@ -40,12 +40,36 @@ const appendRun = (records) => {
   const runId = new Date().toISOString();
   const entries = readAll();
 
-  const added = records.map(record => ({
-    runId,
-    createdAt: runId,
-    ...record,
-    actual: null,
-  }));
+  /*
+   * Итог торгов и вписанные вручную цены аналогов — факты о лоте, а не
+   * об отдельной оценке. Повторный анализ после торгов раньше создавал
+   * запись без них, и разбор сравнивал с финалом старую оценку.
+   */
+  const lotFacts = new Map();
+
+  for (const entry of entries) {
+    const facts = lotFacts.get(String(entry.lotNumber)) || {};
+
+    if (entry.actual)
+      facts.actual = entry.actual;
+
+    if (entry.marketReference)
+      facts.marketReference = entry.marketReference;
+
+    lotFacts.set(String(entry.lotNumber), facts);
+  }
+
+  const added = records.map((record) => {
+    const facts = lotFacts.get(String(record.lotNumber)) || {};
+
+    return {
+      runId,
+      createdAt: runId,
+      ...record,
+      marketReference: record.marketReference || facts.marketReference || null,
+      actual: facts.actual || null,
+    };
+  });
 
   writeAll([...entries, ...added]);
 
