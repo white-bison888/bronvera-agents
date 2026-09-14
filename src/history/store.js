@@ -209,9 +209,6 @@ const buildSummary = () => {
   const estimatesByLot = new Map();
 
   for (const entry of withActual) {
-    if (!Number.isFinite(entry.maxBidUsd))
-      continue;
-
     const lot = String(entry.lotNumber);
     const current = latestByLot.get(lot);
 
@@ -222,7 +219,13 @@ const buildSummary = () => {
       latestByLot.set(lot, entry);
   }
 
+  /*
+   * Свежая оценка без потолка (ждём фото, нет цены рынка) не уступает
+   * место старой: иначе в разбор возвращается потолок, посчитанный по
+   * устаревшим данным, и искажает перекос. У такого лота прогноза нет.
+   */
   const comparisons = [...latestByLot.values()]
+    .filter(entry => Number.isFinite(entry.maxBidUsd))
     .map((entry) => {
       const sold = entry.actual.soldPriceUsd;
       const gap = entry.maxBidUsd - sold;

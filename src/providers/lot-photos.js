@@ -3,7 +3,20 @@ const path = require("path");
 const { chromium } = require("playwright");
 const { inspectPhoto, MIN_FILE_BYTES } = require("../photos/quality");
 
-const PHOTO_URL_PATTERN = /https:\/\/images\.bid\.cars\/[^"'\s\\)]+\.jpg/g;
+/*
+ * Снимки лота живут на трёх адресах. Пока торги идут — images.bid.cars.
+ * После закрытия лот уходит в архив, и те же кадры отдаются уже с
+ * pluto.bid.car (полный размер) и mercury.bid.cars (уменьшенные). Зная
+ * только первый адрес, сборщик у архивного лота находил ноль снимков.
+ */
+const PHOTO_URL_PATTERN
+  = /https:\/\/(?:images\.bid\.cars|pluto\.bid\.car|mercury\.bid\.cars)\/[^"'\s\\)]+\.jpg/g;
+
+// От лучшего источника к худшему: превью берём, только если больше нечего.
+const PHOTO_HOST_PRIORITY = ["images.bid.cars", "pluto.bid.car", "mercury.bid.cars"];
+
+const isPhotoUrl = url => PHOTO_HOST_PRIORITY.some(host => url.startsWith(`https://${host}/`))
+  && url.endsWith(".jpg");
 
 const { parseAuctionTiming } = require("./auction-timing");
 
@@ -112,10 +125,27 @@ class LotPhotoCollector {
     fs.renameSync(tempFile, this.cacheFile);
   }
 
-  extractPhotoUrls(html) {
-    const found = html.match(PHOTO_URL_PATTERN) || [];
+  extractPhotoUrls(html, lotNumber = null) {
+    const found = [...new Set(html.match(PHOTO_URL_PATTERN) || [])];
 
-    const unique = [...new Set(found)];
+    /*
+     * На странице архивного лота есть и превью похожих машин с тех же
+     * адресов. Свои кадры узнаём по номеру лота в пути: 1-66239746 у архива,
+     * 046009893_… у идущих торгов.
+     */
+    const ownMarks = lotNumber
+      ? [String(lotNumber), String(lotNumber).replace(/-/g, "")]
+      : null;
+
+    const own = ownMarks
+      ? found.filter(url => ownMarks.some(mark => new URL(url).pathname.startsWith(`/${mark}`)))
+      : found;
+
+    const host = PHOTO_HOST_PRIORITY.find(name => own.some(url => new URL(url).host === name));
+
+    const unique = host
+      ? own.filter(url => new URL(url).host === host)
+      : [];
 
     return this.maxPhotosPerLot > 0
       ? unique.slice(0, this.maxPhotosPerLot)
@@ -279,7 +309,7 @@ class LotPhotoCollector {
     fs.mkdirSync(lotDir, { recursive: true });
 
     const images = await page
-      .locator('img[src*="images.bid.cars"]')
+      .locator('img[src*="images.bid.cars"], img[src*="pluto.bid.car"], img[src*="mercury.bid.cars"]')
       .all();
 
     const files = [];
@@ -397,7 +427,12 @@ class LotPhotoCollector {
     return collected;
   }
 
-  async collect(lots = []) {
+  /*
+   * refill — зайти на страницу, даже если снимки уже лежат на диске.
+   * Нужен лотам, собранным при старом лимите в шесть кадров: уже
+   * скачанные файлы не перекачиваются, добавляются только недостающие.
+   */
+  async collect(lots = [], { refill = false } = {}) {
     this.details = {};
 
     const cache = this.loadCache();
@@ -406,7 +441,7 @@ class LotPhotoCollector {
     const missing = lots.filter((lot) => {
       const onDisk = this.readPhotoDir(lot.lotNumber);
 
-      if (onDisk.length > 0) {
+      if (onDisk.length > 0 && !refill) {
         result[String(lot.lotNumber)] = onDisk;
 
         return false;
@@ -484,7 +519,7 @@ class LotPhotoCollector {
     page.on("response", async (response) => {
       const url = response.url();
 
-      if (!url.includes("images.bid.cars") || !url.endsWith(".jpg"))
+      if (!isPhotoUrl(url))
         return;
 
       if (!response.ok())
@@ -539,7 +574,7 @@ class LotPhotoCollector {
           await page.mouse.wheel(0, 2500);
           await page.waitForTimeout(5000);
 
-          const urls = this.extractPhotoUrls(await page.content());
+          const urls = this.extractPhotoUrls(await page.content(), key);
 
           const details = await this.extractLotDetails(page);
 

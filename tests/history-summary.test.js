@@ -21,12 +21,16 @@ test('a lot analysed several times counts once, by its latest estimate', () => {
       { lotNumber: 'C', createdAt: '2026-09-06T12:00:00.000Z', maxBidUsd: 5000, viable: true, actual: sold },
       { lotNumber: 'C', createdAt: '2026-09-07T12:00:00.000Z', maxBidUsd: 0, viable: false, actual: sold },
       { lotNumber: 'D', createdAt: '2026-09-07T12:00:00.000Z', maxBidUsd: 4000, viable: true, actual: null },
+      // Свежая оценка ждёт фото: старый потолок в разбор не возвращается.
+      { lotNumber: 'E', createdAt: '2026-09-06T12:00:00.000Z', maxBidUsd: 9000, viable: true, actual: sold },
+      { lotNumber: 'E', createdAt: '2026-09-14T12:00:00.000Z', maxBidUsd: null, viable: false, actual: sold },
     ]));
 
     const summary = require('../src/history/store').buildSummary();
 
-    assert.equal(summary.totalEntries, 7);
-    assert.equal(summary.withActualPrice, 3);
+    assert.equal(summary.totalEntries, 9);
+    assert.equal(summary.withActualPrice, 4);
+    assert.equal(summary.comparisons.find(item => item.lotNumber === 'E'), undefined);
     assert.equal(summary.comparisons.length, 3);
     assert.equal(summary.forecastCount, 2);
     assert.equal(summary.notViableCount, 1);
