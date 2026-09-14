@@ -243,9 +243,12 @@ class PhotoWorker {
 
     const listing = this.bidCars.findByLotNumber(lotNumber) || {};
 
+    const seller = listing.seller || entries.map(entry => entry.lotDetails?.seller).filter(Boolean).pop();
+
     const result = calculateMaxBid({
       ...listing,
       lotNumber,
+      ...(seller ? { seller } : {}),
       marketValueUsd: latest.marketValueUsd,
       photoAssessment: assessment,
     });

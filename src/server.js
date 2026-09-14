@@ -173,6 +173,15 @@ app.post("/api/economics/max-bid", (req, res) => {
     // они нужны для запасной оценки ремонта, когда ASSESSOR её не дал.
     const listings = new Map();
 
+    // Продавца видно только на странице лота: он лежит в истории,
+    // куда его записал сбор фотографий, а в реестре его чаще нет.
+    const sellers = new Map();
+
+    for (const entry of history.readAll()) {
+      if (entry.lotDetails?.seller)
+        sellers.set(String(entry.lotNumber), entry.lotDetails.seller);
+    }
+
     const results = vehicles.map((vehicle) => {
       const listing = bidCars.findByLotNumber(vehicle.lotNumber);
 
@@ -182,10 +191,13 @@ app.post("/api/economics/max-bid", (req, res) => {
       // Разбор фотографий, если он уже делался для этого лота.
       const photoAssessment = photoAssessor.getCached(vehicle.lotNumber);
 
+      const seller = vehicle.seller || listing?.seller || sellers.get(String(vehicle.lotNumber));
+
       return calculateMaxBid(
         {
           ...(listing || {}),
           ...vehicle,
+          ...(seller ? { seller } : {}),
           ...(photoAssessment ? { photoAssessment } : {}),
         },
         body.rates || {}

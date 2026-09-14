@@ -43,3 +43,19 @@ test('a lot that cannot earn the minimum profit is skipped at any price', () => 
   assert.equal(result.viable, false);
   assert.equal(result.verdict, 'SKIP');
 });
+
+test('a lot from a known non-insurance seller is skipped without a ceiling', () => {
+  const result = calculateMaxBid(lot({ seller: 'Non-insurance Company', auctionEstimateMin: 4000, auctionEstimateMax: 7000 }));
+  assert.equal(result.verdict, 'SKIP');
+  assert.equal(result.maxBidUsd, null);
+  assert.match(result.reason, /страховая/);
+  // Неизвестный продавец расчёт не блокирует.
+  assert.notEqual(calculateMaxBid(lot({ seller: '-' })).maxBidUsd, null);
+});
+
+test('electric cars pay the ocean surcharge for batteries', () => {
+  const petrol = calculateMaxBid(lot({ fuelType: 'Gasoline' }));
+  const electric = calculateMaxBid(lot({ fuelType: 'Electric' }));
+  assert.equal(electric.breakdown.evOceanSurchargeUsd, 300);
+  assert.ok(electric.maxBidUsd < petrol.maxBidUsd);
+});

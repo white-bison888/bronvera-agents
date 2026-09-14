@@ -130,3 +130,13 @@ test('kufar and onliner listings are read in dollars and kilometres', async () =
   assert.equal(onliner.listings[0].priceUsd, 24768.82);
   assert.equal(onliner.listings[0].mileageKm, 16093);
 });
+
+test('a lot far above the analogs mileage gets no market price', async () => {
+  const listings = [50000, 60000, 70000, 125000].map((mileageKm, i) => ({ title: `Tesla Model Y ${i}`, year: 2023, mileageKm, priceUsd: 27000 + i * 500 }));
+  const prices = new MinskMarketPrices({ cacheFile: tempCache(), sources: [fakeSource('auto.kufar.by', listings)] });
+  const result = await prices.lookup({ lotNumber: '1-66239746', make: 'Tesla', model: 'MODEL Y', year: 2023, mileage: 151000 });
+
+  assert.equal(result.status, 'mileage_out_of_range');
+  assert.equal(result.marketValueUsd, null);
+  assert.match(result.reason, /243 тыс\. км/);
+});

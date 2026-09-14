@@ -22,6 +22,12 @@ const MIN_ANALOGS = 3;
 // Сколько ближайших аналогов со ссылками отдавать: полный список раздувает промпт.
 const ANALOGS_SHOWN = 8;
 
+// Во сколько раз пробег лота может превышать пробег самого пробежистого аналога.
+const MILEAGE_OVER_ANALOGS = 1.25;
+
+// Поднимается, когда меняются правила подбора: старые результаты кэша не годятся.
+const RULES_VERSION = 2;
+
 const USER_AGENT
   = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
   + "(KHTML, like Gecko) Chrome/128.0 Safari/537.36";
@@ -401,7 +407,8 @@ class MinskMarketPrices {
     const key = MinskMarketPrices.cacheKey(vehicle);
     const cached = this.cache[key];
 
-    if (cached && Date.now() - Date.parse(cached.fetchedAt) <= this.ttlMs)
+    if (cached && cached.rulesVersion === RULES_VERSION
+      && Date.now() - Date.parse(cached.fetchedAt) <= this.ttlMs)
       return { lotNumber, ...cached, cached: true };
 
     const result = await this.collect(vehicle, year);
@@ -446,6 +453,7 @@ class MinskMarketPrices {
       errors,
       notes: [ABW_NOTE],
       fetchedAt: new Date().toISOString(),
+      rulesVersion: RULES_VERSION,
     };
 
     if (errors.length === this.sources.length)
@@ -500,6 +508,16 @@ class MinskMarketPrices {
     const { step, analogs } = chosen;
     const prices = analogs.map(l => l.priceUsd);
 
+    /*
+     * Если пришлось взять «любой пробег», а у лота пробег заметно больше,
+     * чем у самого пробежистого аналога, медиана считается по машинам,
+     * которые дороже нашей, и завышает цену. Такую цену не выдаём.
+     */
+    const analogKm = analogs.map(l => l.mileageKm).filter(Number.isFinite);
+    const maxAnalogKm = analogKm.length ? Math.max(...analogKm) : null;
+    const mileageOutOfRange = !step.mileage && lotKm !== null && maxAnalogKm !== null
+      && lotKm > maxAnalogKm * MILEAGE_OVER_ANALOGS;
+
     const distance = l =>
       Math.abs(l.year - year) * 20000 + Math.abs((l.mileageKm ?? lotKm ?? 0) - (lotKm ?? 0));
 
@@ -533,6 +551,14 @@ class MinskMarketPrices {
         ...summary,
         status: "too_few_analogs",
         reason: `Нашлось аналогов: ${analogs.length}, нужно не меньше ${MIN_ANALOGS}`,
+      };
+    }
+
+    if (mileageOutOfRange) {
+      return {
+        ...summary,
+        status: "mileage_out_of_range",
+        reason: `Нет аналогов с похожим пробегом: у лота ${Math.round(lotKm / 1000)} тыс. км, у аналогов не больше ${Math.round(maxAnalogKm / 1000)} тыс. км — цена была бы завышена`,
       };
     }
 

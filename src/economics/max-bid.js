@@ -1,4 +1,5 @@
 const defaultRates = require("./rates");
+const { checkSeller } = require("../providers/lot-requirements");
 
 /*
  * РАСЧЁТ СДЕЛКИ: аукцион США → продажа в Беларуси.
@@ -137,6 +138,24 @@ const calculateMaxBid = (vehicle, overrides = {}) => {
   const rates = { ...defaultRates, ...overrides };
 
   /*
+   * Требование версии: только страховой продавец. Продавца видно лишь на
+   * странице лота, поэтому до расчёта он мог дойти непроверенным — лот
+   * от известного нестрахового продавца не получает ни потолка, ни BUY.
+   */
+  const seller = checkSeller(vehicle.seller);
+
+  if (seller.known && !seller.ok) {
+    return {
+      lotNumber: vehicle.lotNumber || null,
+      maxBidUsd: null,
+      viable: false,
+      verdict: "SKIP",
+      photoStatus: hasPhotoAssessment(vehicle.photoAssessment) ? "ok" : "skipped",
+      reason: `Лот не подходит под требования: ${seller.reason}`,
+    };
+  }
+
+  /*
    * ГЛАВНОЕ ПРАВИЛО: без оценки по фотографиям заключения нет.
    *
    * Текстовое описание лота говорит «повреждён перёд», но не говорит,
@@ -198,7 +217,8 @@ const calculateMaxBid = (vehicle, overrides = {}) => {
 
   const taxes = importTaxes(vehicle, rates);
   const resaleValue = marketValue * (1 - rates.resaleDiscount);
-  const delivery = rates.usTransportUsd + rates.oceanFreightUsd + rates.portToMinskUsd;
+  const evSurcharge = isElectric(vehicle) ? rates.evOceanSurchargeUsd : 0;
+  const delivery = rates.usTransportUsd + rates.oceanFreightUsd + evSurcharge + rates.portToMinskUsd;
 
   // Всё, что не зависит от цены покупки и не входит в таможенную стоимость.
   const fixedCosts = repairCost + rates.bidcarsFeeUsd + rates.localCostsUsd
@@ -280,6 +300,7 @@ const calculateMaxBid = (vehicle, overrides = {}) => {
       auctionFeesUsd: round(at.auctionFees),
       usTransportUsd: rates.usTransportUsd,
       oceanFreightUsd: rates.oceanFreightUsd,
+      evOceanSurchargeUsd: evSurcharge,
       portToMinskUsd: rates.portToMinskUsd,
       bidcarsFeeUsd: rates.bidcarsFeeUsd,
       customsValueUsd: round(at.customsValue),
