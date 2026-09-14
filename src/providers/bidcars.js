@@ -4,6 +4,7 @@ const cheerio = require("cheerio");
 const { chromium } = require("playwright");
 const { parseAuctionTiming } = require("./auction-timing");
 const { isRunAndDrive, checkSeller } = require("./lot-requirements");
+const { auctionWindow } = require("./auction-window");
 
 class BidCarsRateLimitError extends Error {
   constructor(message, retryAfterSeconds = null) {
@@ -2099,11 +2100,20 @@ class BidCarsProvider {
      * из трёх сотен лотов до него дошло два десятка — иначе пустая выдача
      * неотличима от поломки.
      */
+    /*
+     * Реестр копит лоты из прошлых поисков, и без этого отсева анализ
+     * получал машины, проданные неделю назад. Отсев здесь, а не после
+     * поиска: иначе проданные лоты занимали бы место в выдаче и поиск
+     * не пошёл бы за свежими.
+     */
+    const active = eligible.filter(car => !auctionWindow(car).over);
+
     this.lastRequirementStats = {
       scanned: candidates.length,
       eligible: eligible.length,
       rejected: candidates.length - eligible.length,
       unknownSellers,
+      pastAuctions: eligible.length - active.length,
       at: new Date().toISOString(),
     };
 
@@ -2120,11 +2130,16 @@ class BidCarsProvider {
       );
     }
 
-    return eligible
+    if (active.length < eligible.length)
+      console.log(`   Торги прошли, лот только в истории: скрыто ${eligible.length - active.length}`);
+
+    return active
 
       .map(
         (car) => ({
           ...car,
+
+          saleDateConfirmed: auctionWindow(car).saleDateConfirmed,
 
           ...this.evaluateFilters(
             car,
