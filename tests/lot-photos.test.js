@@ -26,7 +26,14 @@ test('live lot photos keep coming from images.bid.cars, previews only as a last 
     'https://images.bid.cars/046009893_6aa122ce2bc23/2013-Tesla-Model-S-5YJSA1CN1DFP25780-1.jpg',
   ]);
 
-  const previewsOnly = '"https://mercury.bid.cars/0-46009893/2013-Tesla-Model-S-5YJSA1CN1DFP25780-3.jpg"';
+  // Архив: шесть устаревших ссылок images.bid.cars не перебивают полный набор.
+  const archived = [1, 2, 3, 4, 5, 6].map(n => `"https://images.bid.cars/164363066_abc/2024-Tesla-${n}.jpg"`)
+    .concat([1, 2, 3, 4, 5, 6, 7, 8].map(n => `"https://pluto.bid.car/1-64363066/2024-Tesla-${n}.jpg"`)).join(' ');
+  const picked = collector.extractPhotoUrls(archived, '1-64363066');
+  assert.equal(picked.length, 8);
+  assert.ok(picked.every(url => url.startsWith('https://pluto.bid.car/')));
+
+  const previewsOnly ='"https://mercury.bid.cars/0-46009893/2013-Tesla-Model-S-5YJSA1CN1DFP25780-3.jpg"';
   assert.equal(collector.extractPhotoUrls(previewsOnly, '0-46009893').length, 1);
   assert.deepEqual(collector.extractPhotoUrls('<img src="https://bid.cars/img/logo.jpg">', '0-46009893'), []);
 });

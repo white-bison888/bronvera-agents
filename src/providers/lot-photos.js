@@ -141,7 +141,16 @@ class LotPhotoCollector {
       ? found.filter(url => ownMarks.some(mark => new URL(url).pathname.startsWith(`/${mark}`)))
       : found;
 
-    const host = PHOTO_HOST_PRIORITY.find(name => own.some(url => new URL(url).host === name));
+    /*
+     * У архивного лота в разметке остаются и старые ссылки images.bid.cars —
+     * обычно шесть, и они уже закрыты. Берём адрес, где кадров больше всего,
+     * а при равенстве — лучший по качеству.
+     */
+    const countOn = name => own.filter(url => new URL(url).host === name).length;
+
+    const host = PHOTO_HOST_PRIORITY
+      .filter(name => countOn(name) > 0)
+      .sort((a, b) => countOn(b) - countOn(a))[0];
 
     const unique = host
       ? own.filter(url => new URL(url).host === host)
