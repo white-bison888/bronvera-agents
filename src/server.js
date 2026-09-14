@@ -14,6 +14,7 @@ const PhotoAssessor = require("./vision/photo-assessor");
 const photoQueue = require("./photos/queue");
 const PhotoWorker = require("./photos/worker");
 const BidWatcher = require("./photos/bid-watcher");
+const { MinskMarketPrices } = require("./market/minsk-prices");
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -24,6 +25,7 @@ app.use(express.json());
 const bidCars = new BidCarsProvider();
 const photoCollector = new LotPhotoCollector();
 const photoAssessor = new PhotoAssessor();
+const marketPrices = new MinskMarketPrices();
 
 const photoWorker = new PhotoWorker({
   bidCars,
@@ -258,6 +260,75 @@ app.post("/api/economics/max-bid", (req, res) => {
     });
   } catch (error) {
     console.error("Max bid error:", error);
+
+    res.status(500).json({
+      success: false,
+      error: error.message,
+      results: [],
+    });
+  }
+});
+
+/*
+ * Рыночная цена по объявлениям Беларуси (auto.kufar.by, ab.onliner.by).
+ * Узел Dify перед MARKET ANALYST шлёт тот же список отобранных лотов,
+ * что и PHOTO ASSESS. Чего в нём не хватает — марки, года, пробега —
+ * добираем из локального реестра лотов.
+ */
+app.post("/api/market/prices", async (req, res) => {
+  try {
+    const body = req.body || {};
+
+    const requested = Array.isArray(body.vehicles)
+      ? body.vehicles
+      : (body.selectedLots || []).map(item => ({
+        ...(item.listing || {}),
+        lotNumber: item.listing?.lotNumber ?? item.selector?.lotNumber,
+      }));
+
+    if (requested.length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: "Нужен список vehicles или selectedLots",
+        results: [],
+      });
+    }
+
+    console.log(`\n🏷️ Цены Беларуси: ${requested.length} лот(ов)`);
+
+    const results = [];
+
+    // По одному: площадкам незачем видеть от нас пачку одновременных запросов.
+    for (const vehicle of requested) {
+      const listing = bidCars.findByLotNumber(vehicle.lotNumber) || {};
+      const pick = field => vehicle[field] ?? listing[field] ?? null;
+
+      const result = await marketPrices.lookup({
+        lotNumber: vehicle.lotNumber,
+        make: pick("make"),
+        model: pick("model"),
+        year: pick("year"),
+        mileage: pick("mileage"),
+      });
+
+      console.log(
+        `   ${result.lotNumber || "—"}: ` +
+        (result.marketValueUsd
+          ? `$${result.marketValueUsd} по ${result.analogsCount} аналогам (${result.match.level})`
+          : `— (${result.reason})`) +
+        (result.cached ? " [кэш]" : "")
+      );
+
+      results.push(result);
+    }
+
+    res.json({
+      success: true,
+      count: results.length,
+      results,
+    });
+  } catch (error) {
+    console.error("Market prices error:", error);
 
     res.status(500).json({
       success: false,

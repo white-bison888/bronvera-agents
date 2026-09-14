@@ -156,7 +156,7 @@ const calculateMaxBid = (vehicle, overrides = {}) => {
 
   /*
    * Если известна цена живого аналога в Польше, она надёжнее любых
-   * коэффициентов — это факт рынка, а не пересчёт американской витрины.
+   * коэффициентов — это факт рынка, а не пересчёт чужих объявлений.
    */
   const localMarketValue = Number.isFinite(vehicle.polandPriceUsd)
     ? vehicle.polandPriceUsd
@@ -232,7 +232,7 @@ const calculateMaxBid = (vehicle, overrides = {}) => {
       repairCostBasis: rates.repairCostBasis,
       localPriceSource: Number.isFinite(vehicle.polandPriceUsd)
         ? "цена аналога в Польше, введена вручную"
-        : "пересчёт американской оценки",
+        : "рыночная цена Беларуси с поправкой на Польшу",
       targetProfitRate: rates.targetProfitRate,
       riskReserveRate: rates.riskReserveRate,
       auctionFeeRate: rates.auctionFeeRate,
