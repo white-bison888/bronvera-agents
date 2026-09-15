@@ -1,7 +1,9 @@
+const { measuredCall, measureRun } = require("./observability/usage");
 const Anthropic = require("@anthropic-ai/sdk");
 const fs = require("fs");
 const path = require("path");
 const SkillLoader = require("./skills/skill-loader");
+const VerificationRules = require("./verification/verification-rules");
 
 const client = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY,
@@ -44,7 +46,7 @@ class AgentManager {
 ${knowledgeContext}`
     : systemPrompt;
 
-  const response = await client.messages.create({
+  const response = await measuredCall({ component: agentId, model: "claude-sonnet-4-6" }, () => client.messages.create({
     model: "claude-sonnet-4-6",
     max_tokens: 2048,
     system: fullSystemPrompt,
@@ -54,7 +56,7 @@ ${knowledgeContext}`
         content: userMessage
       }
     ],
-  });
+  }));
 
   return response.content[0].text;
 }
@@ -67,6 +69,10 @@ class Orchestrator {
   }
 
   async analyzeAuction(auctionListings) {
+    return measureRun("auction-analysis", () => this.analyzeAuctionRun(auctionListings));
+  }
+
+  async analyzeAuctionRun(auctionListings) {
     console.log("🎯 Оркестратор запущен...\n");
 
     // -------------------------------------------------
@@ -228,6 +234,83 @@ ${JSON.stringify(car, null, 2)}
       }
 
       // -------------------------------------------------
+      // 3.5. ВЕРИФИКАЦИЯ (Курпатов принцип 4)
+      // -------------------------------------------------
+
+      let verificationResult = null;
+      let reassessmentHistory = [];
+
+      if (assessor && market) {
+        verificationResult = VerificationRules.checkConsistency(
+          { confidence: assessor.confidence || 75 },
+          assessor,
+          market
+        );
+
+        if (verificationResult.requiresReassessment) {
+          console.log(
+            `⚠️ Обнаружены противоречия! Запускаю пересчёт...`
+          );
+
+          for (const contradiction of verificationResult.contradictions) {
+            const reassessmentRequest = VerificationRules.buildReassessmentRequest(
+              contradiction,
+              { assessor, market }
+            );
+
+            if (reassessmentRequest) {
+              console.log(
+                `   🔄 Пересчёт ${reassessmentRequest.type}...`
+              );
+
+              const reassessedResponse = await this.agentManager.callAgent(
+                contradiction.target_agent,
+                `
+${reassessmentRequest.question}
+
+Контекст: ${JSON.stringify(reassessmentRequest.context)}
+
+Автомобиль: ${JSON.stringify(car)}
+
+Верни обновленный анализ в JSON-формате.
+`
+              );
+
+              try {
+                if (contradiction.target_agent === 'assessor') {
+                  assessor = this.parseAgentJson(reassessedResponse);
+                } else if (contradiction.target_agent === 'marketAnalyst') {
+                  market = this.parseAgentJson(reassessedResponse);
+                }
+
+                reassessmentHistory.push({
+                  iteration: reassessmentHistory.length + 1,
+                  contradiction_type: contradiction.type,
+                  target_agent: contradiction.target_agent,
+                  timestamp: new Date().toISOString()
+                });
+
+                console.log(
+                  `   ✅ Пересчёт завершён (итерация ${reassessmentHistory.length})`
+                );
+              } catch (error) {
+                console.log(
+                  `   ❌ Ошибка парсинга пересчёта: ${error.message}`
+                );
+              }
+            }
+          }
+
+          // Перепроверить после пересчёта
+          verificationResult = VerificationRules.checkConsistency(
+            { confidence: assessor.confidence || 75 },
+            assessor,
+            market
+          );
+        }
+      }
+
+      // -------------------------------------------------
       // 4. Числовые показатели
       // -------------------------------------------------
 
@@ -288,6 +371,13 @@ ${JSON.stringify(car, null, 2)}
         }
       }
 
+      const finalConfidence = verificationResult
+        ? verificationResult.overallConfidence
+        : Math.min(
+            assessor.confidence || 75,
+            market.confidence || 87
+          ) / 100;
+
       results.push({
         vehicle: {
           make: car.make,
@@ -318,6 +408,16 @@ ${JSON.stringify(car, null, 2)}
         recommendation,
 
         risk: assessor.risk || "UNKNOWN",
+
+        // Курпатов принципы: Верификация и уверенность
+        verification: {
+          hasContradictions: verificationResult?.hasContradictions || false,
+          contradictions: verificationResult?.contradictions || [],
+          anomalies: verificationResult?.anomalies || [],
+          isConsistent: verificationResult?.isConsistent || true,
+          reassessmentHistory,
+          finalConfidence: Math.round(finalConfidence * 100)
+        },
 
         assessor,
         market
@@ -624,6 +724,36 @@ ${JSON.stringify(car, null, 2)}
       console.log(
         `   Решение: ${result.recommendation}`
       );
+
+      // Курпатов верификация
+      if (result.verification) {
+        console.log(`   Уверенность: ${result.verification.finalConfidence}%`);
+
+        if (result.verification.hasContradictions) {
+          console.log(`   ⚠️ Противоречия обнаружены:`);
+          result.verification.contradictions.forEach((c) => {
+            console.log(`      - ${c.type}: ${c.description}`);
+          });
+        }
+
+        if (result.verification.reassessmentHistory.length > 0) {
+          console.log(
+            `   🔄 Пересчёты (${result.verification.reassessmentHistory.length}):`
+          );
+          result.verification.reassessmentHistory.forEach((r, i) => {
+            console.log(
+              `      ${i + 1}. ${r.target_agent} (${r.contradiction_type})`
+            );
+          });
+        }
+
+        if (result.verification.anomalies.length > 0) {
+          console.log(`   🔍 Аномалии:`);
+          result.verification.anomalies.forEach((a) => {
+            console.log(`      - ${a.type}: ${a.description}`);
+          });
+        }
+      }
 
       if (result.url) {
         console.log(`   ${result.url}`);
