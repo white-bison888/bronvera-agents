@@ -1,4 +1,5 @@
 const defaultRates = require("./rates");
+const forecastPositions = require("./forecast-positions");
 const { checkSeller } = require("../providers/lot-requirements");
 const { lotWarnings } = require("../providers/lot-notices");
 
@@ -159,6 +160,17 @@ const readForecast = (vehicle, rates) => {
 
 const calculateDeal = (vehicle, overrides = {}) => {
   const rates = { ...defaultRates, ...overrides };
+
+  /*
+   * Поправка точки прогноза для модели, принятая Mikita в «Поправках».
+   * Точка, переданная вызовом явно, важнее: так считают «что было бы».
+   */
+  if (overrides.forecastPosition === undefined) {
+    const adjusted = forecastPositions.positionFor(vehicle.model);
+
+    if (adjusted !== null)
+      rates.forecastPosition = adjusted;
+  }
 
   /*
    * Требование версии: только страховой продавец. Продавца видно лишь на

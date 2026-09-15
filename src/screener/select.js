@@ -1,4 +1,5 @@
 const defaultRates = require("../economics/rates");
+const forecastPositions = require("../economics/forecast-positions");
 const { calculateMaxBid } = require("../economics/max-bid");
 const { checkSeller, isRunAndDrive } = require("../providers/lot-requirements");
 const { auctionWindow } = require("../providers/auction-window");
@@ -46,7 +47,10 @@ const expectedPriceUsd = (lot, rates = defaultRates) => {
   if (!Number.isFinite(min) || !Number.isFinite(max) || min <= 0 || max < min)
     return null;
 
-  return Math.round(min + rates.forecastPosition * (max - min));
+  // Та же точка, что в расчёте лота: с поправкой для модели, если она применена.
+  const position = forecastPositions.positionFor(lot.model) ?? rates.forecastPosition;
+
+  return Math.round(min + position * (max - min));
 };
 
 /*

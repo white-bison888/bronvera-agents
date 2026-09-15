@@ -18,6 +18,8 @@ const PhotoWorker = require("./photos/worker");
 const BidWatcher = require("./photos/bid-watcher");
 const { MinskMarketPrices, marketSnapshot } = require("./market/minsk-prices");
 const { MarketChecker } = require("./market/market-checks");
+const forecastPositions = require("./economics/forecast-positions");
+const { recalculateOpenLots } = require("./economics/recalculate");
 const DailyScreener = require("./screener/screener");
 const costLedger = require("./costs/ledger");
 const { createDifyUsage, UUID } = require("./costs/dify-usage");
@@ -863,6 +865,50 @@ app.get("/api/history/market/:lotNumber", (req, res) => {
 // Сверки цены в Беларуси по всем лотам — цифры без объявлений.
 app.get("/api/market/checks", (req, res) => {
   res.json({ success: true, lots: marketChecker.summary() });
+});
+
+// Поправки точки прогноза по моделям: действующие и история решений.
+app.get("/api/forecast/positions", (req, res) => {
+  res.json({ success: true, ...forecastPositions.list() });
+});
+
+/*
+ * Решение Mikita по поправке: apply, wait, reject или undo. Применение и
+ * отмена сразу пересчитывают открытые лоты модели (решение 2026-09-15).
+ */
+app.post("/api/forecast/positions/decisions", (req, res) => {
+  const { model, choice, position, basis } = req.body || {};
+  let decision;
+
+  try {
+    decision = forecastPositions.decide({
+      model: String(model || "").trim(),
+      choice,
+      position: position === undefined || position === null ? undefined : Number(position),
+      basis: basis && typeof basis === "object" ? basis : null,
+    });
+  } catch (error) {
+    return res.status(400).json({ success: false, error: error.message });
+  }
+
+  let recalculated = [];
+
+  if (choice === "apply" || choice === "undo") {
+    try {
+      recalculated = recalculateOpenLots({ model: decision.model, bidCars, photoAssessor });
+      decision = forecastPositions.annotate(decision.id, { recalculated }) || decision;
+    } catch (error) {
+      console.error("Пересчёт открытых лотов:", error.message);
+      decision = forecastPositions.annotate(decision.id, { recalculateError: error.message }) || decision;
+    }
+  }
+
+  console.log(
+    `\n🎯 Поправка прогноза: ${decision.model} — ${choice}, точка ${decision.from} → ${decision.to}` +
+    `, пересчитано открытых лотов: ${recalculated.length}`
+  );
+
+  res.json({ success: true, decision, recalculated });
 });
 
 app.get("/api/history/summary", (req, res) => {
