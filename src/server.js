@@ -20,6 +20,7 @@ const { MinskMarketPrices, marketSnapshot } = require("./market/minsk-prices");
 const { MarketChecker } = require("./market/market-checks");
 const forecastPositions = require("./economics/forecast-positions");
 const { recalculateOpenLots } = require("./economics/recalculate");
+const { summarizeRun } = require("./searches/summary");
 const DailyScreener = require("./screener/screener");
 const costLedger = require("./costs/ledger");
 const { createDifyUsage, UUID } = require("./costs/dify-usage");
@@ -1036,6 +1037,37 @@ app.get("/api/costs/run/:runId", async (req, res) => {
     ...buildRunCost({ runId, dify, entries: costLedger.readEntries({ runId }), pendingPhotos }),
     difyError,
   });
+});
+
+/*
+ * История поисков с сайта: последние прогоны Dify — запрос, чем кончился,
+ * сколько лотов и сколько стоил. Полный результат сайт берёт из прогона.
+ */
+app.get("/api/searches", async (req, res) => {
+  let data;
+
+  try {
+    data = await difyUsage.recentRuns(req.query.limit);
+  } catch (error) {
+    return res.status(502).json({ success: false, error: `База Dify недоступна: ${error.message}` });
+  }
+
+  const nodesByRun = new Map();
+
+  for (const node of data.nodes || [])
+    nodesByRun.set(node.run_id, [...(nodesByRun.get(node.run_id) || []), node]);
+
+  const searches = (data.runs || []).map((run) => {
+    const cost = buildRunCost({
+      runId: run.id,
+      dify: { run, nodes: nodesByRun.get(run.id) || [] },
+      entries: costLedger.readEntries({ runId: run.id }),
+    });
+
+    return { ...summarizeRun(run), costUsd: cost.totalUsd, costComplete: cost.unknown.length === 0 };
+  });
+
+  res.json({ success: true, searches });
 });
 
 // Итоги дня и месяца по Минску; ?day=YYYY-MM-DD, по умолчанию сегодня.

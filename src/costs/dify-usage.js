@@ -81,6 +81,33 @@ const createDifyUsage = ({ query = defaultQuery } = {}) => ({
 
     return JSON.parse(await query(sql));
   },
+
+  /*
+   * Последние поиски с сайта (не прогоны из редактора Dify): запрос, итог
+   * и шаги ИИ — для истории поисков и стоимости каждого.
+   */
+  async recentRuns(limit = 20) {
+    const { appId } = config();
+    const count = Math.max(1, Math.min(100, Number(limit) || 20));
+
+    const sql = `
+      with recent as (
+        select id, status, elapsed_time, total_tokens, created_at, finished_at, inputs, outputs, error
+        from workflow_runs
+        where app_id = '${appId}' and triggered_from = 'app-run'
+        order by created_at desc
+        limit ${count}
+      )
+      select json_build_object(
+        'runs', coalesce((select json_agg(r order by r.created_at desc) from recent r), '[]'::json),
+        'nodes', coalesce((select json_agg(x) from (
+          select n.workflow_run_id as run_id, ${NODE_COLUMNS}
+          from workflow_node_executions n
+          where n.workflow_run_id in (select id from recent) and n.node_type = 'llm') x), '[]'::json)
+      )`;
+
+    return JSON.parse(await query(sql));
+  },
 });
 
 module.exports = { createDifyUsage, UUID };
