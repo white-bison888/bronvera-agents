@@ -17,6 +17,7 @@ const photoQueue = require("./photos/queue");
 const PhotoWorker = require("./photos/worker");
 const BidWatcher = require("./photos/bid-watcher");
 const { MinskMarketPrices, marketSnapshot } = require("./market/minsk-prices");
+const { MarketChecker } = require("./market/market-checks");
 const DailyScreener = require("./screener/screener");
 const costLedger = require("./costs/ledger");
 const { createDifyUsage, UUID } = require("./costs/dify-usage");
@@ -53,6 +54,9 @@ const photoWorker = new PhotoWorker({
 });
 
 const bidWatcher = new BidWatcher({ bidCars });
+
+// Сверка цены в Беларуси раз в 7 дней после прогноза.
+const marketChecker = new MarketChecker({ marketPrices, bidCars });
 
 const screener = new DailyScreener({
   bidCars,
@@ -848,11 +852,17 @@ app.get("/api/history/market/:lotNumber", (req, res) => {
   const entry = history.readAll()
     .filter(record => String(record.lotNumber) === lotNumber && record.market)
     .pop();
+  const checks = marketChecker.detail(lotNumber);
 
-  if (!entry)
+  if (!entry && !checks)
     return res.status(404).json({ success: false, error: `У лота ${lotNumber} нет сохранённых объявлений` });
 
-  res.json({ success: true, lotNumber, estimatedAt: entry.createdAt, market: entry.market });
+  res.json({ success: true, lotNumber, estimatedAt: entry?.createdAt || null, market: entry?.market || null, checks });
+});
+
+// Сверки цены в Беларуси по всем лотам — цифры без объявлений.
+app.get("/api/market/checks", (req, res) => {
+  res.json({ success: true, lots: marketChecker.summary() });
 });
 
 app.get("/api/history/summary", (req, res) => {
@@ -1031,4 +1041,5 @@ app.listen(PORT, () => {
   photoWorker.start();
   bidWatcher.start();
   screener.start();
+  marketChecker.start();
 });
