@@ -138,3 +138,41 @@ test('parallel calls share a run; unknown costs are not reported as zero', async
   assert.equal(events.filter(x => x.runId === summary.runId && x.callId).length, 2);
   assert.equal(events.filter(x => x.component === 'nested').length, 0);
 });
+
+test('with photos already on disk an unknown seller still sends the collector to the lot page, and a non-insurer is skipped', async () => {
+  const history = require('../src/history/store');
+  queue.clear();
+  queue.enqueue([{ lotNumber: '1-675' }]);
+  history.appendRun([{ lotNumber: '1-675', marketValueUsd: 27000, decision: 'BUY', maxBidUsd: 13030, screener: { day: '2026-09-15' } }]);
+
+  const calls = [];
+  const worker = new Worker({
+    bidCars: { findByLotNumber: () => ({ url: 'https://example.com/lot', seller: '---' }) },
+    photoCollector: {
+      collect: async (lots, options) => { calls.push(options); return { '1-675': ['1.jpg'] }; },
+      takeDetails: () => ({ '1-675': { seller: 'Non-insurance Company' } }),
+      readPhotoDir: () => ['1.jpg'],
+    },
+    photoAssessor: { assess: async () => { throw new Error('assessment must not run for a non-insurer'); } },
+  });
+
+  await worker.tick();
+
+  assert.deepEqual(calls, [{ refill: true }]);
+  assert.equal(queue.stats().pending, 0);
+  const latest = history.readAll().filter(entry => entry.lotNumber === '1-675').pop();
+  assert.equal(latest.decision, 'SKIP');
+  assert.equal(latest.maxBidUsd, null);
+  assert.equal(latest.screener.day, '2026-09-15');
+  assert.equal(latest.lotDetails.seller, 'Non-insurance Company');
+
+  // Продавец уже известен — страницу лота ради него не открываем.
+  queue.enqueue([{ lotNumber: '0-777' }]);
+  const known = [];
+  await new Worker({
+    bidCars: { findByLotNumber: () => ({ url: 'https://example.com/lot', seller: 'State Farm Group Insurance' }) },
+    photoCollector: { collect: async (lots, options) => { known.push(options); return { '0-777': [] }; }, readPhotoDir: () => ['1.jpg'] },
+    photoAssessor: { assess: async () => [{ available: true, repairCostMin: 1000, repairCostMax: 2000 }] },
+  }).tick();
+  assert.deepEqual(known, [{ refill: false }]);
+});

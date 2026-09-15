@@ -3,6 +3,7 @@ const history = require("../history/store");
 const { calculateMaxBid } = require("../economics/max-bid");
 const { checkSeller } = require("../providers/lot-requirements");
 const { withRun } = require("../costs/ledger");
+const { noticeFields } = require("../providers/lot-notices");
 
 /*
  * Bid.Cars закрывает доступ уже со второго лота подряд, поэтому сбор
@@ -127,22 +128,40 @@ class PhotoWorker {
 
     console.log(`\n📸 Фоновый сбор: ${lotNumber}`);
 
-    // Ссылки на кадры из выдачи поиска — запасной путь, если страница лота закрыта.
+    const knownSeller = [listing.seller, ...this.historySellers(lotNumber)]
+      .find(seller => checkSeller(seller).known) || null;
+
+    /*
+     * У Copart продавца нет в выдаче поиска — он есть только на странице лота.
+     * Утренний отбор скачивает кадры со страницы поиска, и без этого флага
+     * сборщик, найдя кадры на диске, на страницу лота не шёл: продавец
+     * оставался непрочитанным, и нестраховой лот получал «Покупать» (15.09,
+     * 1-67538336). Пока продавец неизвестен, страницу лота открываем всегда.
+     */
     const photos = await this.photoCollector.collect([
+      // Ссылки на кадры из выдачи поиска — запасной путь, если страница лота закрыта.
       { lotNumber, url: listing.url, images: listing.images },
-    ]);
+    ], { refill: !knownSeller });
+
+    // Страница закрылась, а кадры уже лежат на диске — разбор всё равно возможен.
+    if (!(photos[String(lotNumber)] || []).length && this.photoCollector.readPhotoDir)
+      photos[String(lotNumber)] = this.photoCollector.readPhotoDir(lotNumber);
 
     const details = (this.photoCollector.takeDetails?.() || {})[String(lotNumber)];
+
+    if (details)
+      this.saveDetails(lotNumber, details);
 
     /*
      * Продавца видно только на странице лота, поэтому требование проверяется
      * здесь, а не при отборе каталога. Чужой продавец — отказ окончательный:
-     * убираем лот из очереди, оценку не запускаем.
+     * убираем лот из очереди, оценку не запускаем, в историю пишем отказ.
      */
-    const sellerCheck = checkSeller(details?.seller);
+    const sellerCheck = checkSeller(details?.seller || knownSeller);
 
     if (sellerCheck.known && !sellerCheck.ok) {
       queue.markDone(lotNumber, 0);
+      this.recordSellerSkip(lotNumber, details?.seller || knownSeller);
 
       console.log(`   ${lotNumber}: пропуск — ${sellerCheck.reason}`);
 
@@ -151,9 +170,6 @@ class PhotoWorker {
 
     if (!sellerCheck.known)
       console.log(`   ${lotNumber}: продавец не прочитан, оцениваем без проверки`);
-
-    if (details)
-      this.saveDetails(lotNumber, details);
 
     const files = photos[String(lotNumber)] || [];
 
@@ -213,6 +229,53 @@ class PhotoWorker {
 
   }
 
+  // Продавцы, прочитанные со страницы лота в прошлые визиты.
+  historySellers(lotNumber) {
+    try {
+      return history.readAll()
+        .filter(entry => String(entry.lotNumber) === String(lotNumber))
+        .map(entry => entry.lotDetails?.seller)
+        .filter(Boolean);
+    } catch {
+      return [];
+    }
+  }
+
+  /*
+   * Отказ по продавцу виден в истории: без записи лот так и висел бы
+   * с прежним вердиктом, посчитанным до проверки продавца.
+   */
+  recordSellerSkip(lotNumber, seller) {
+    const latest = history
+      .readAll()
+      .filter(entry => String(entry.lotNumber) === String(lotNumber))
+      .pop();
+
+    if (!latest)
+      return;
+
+    const result = calculateMaxBid({ lotNumber, seller });
+
+    history.appendRun([
+      {
+        lotNumber,
+        vin: latest.vin,
+        make: latest.make,
+        model: latest.model,
+        year: latest.year,
+        url: latest.url,
+        marketValueUsd: latest.marketValueUsd,
+        maxBidUsd: null,
+        viable: false,
+        verdictReason: result.reason,
+        notViableReason: result.reason,
+        decision: "SKIP",
+        lotDetails: { ...(latest.lotDetails || {}), seller },
+        ...(latest.screener ? { screener: latest.screener } : {}),
+      },
+    ]);
+  }
+
   saveDetails(lotNumber, details) {
     try {
       history.setLotDetails(lotNumber, details);
@@ -246,11 +309,15 @@ class PhotoWorker {
 
     const listing = this.bidCars.findByLotNumber(lotNumber) || {};
 
-    const seller = listing.seller || entries.map(entry => entry.lotDetails?.seller).filter(Boolean).pop();
+    // «---» из выдачи не должен перебивать продавца со страницы лота.
+    const sellers = [listing.seller, ...entries.map(entry => entry.lotDetails?.seller).reverse()];
+    const seller = sellers.find(value => checkSeller(value).known) || sellers.find(Boolean);
+    const lotDetails = entries.map(entry => entry.lotDetails).filter(Boolean).pop() || {};
 
     const result = calculateMaxBid({
       ...listing,
       lotNumber,
+      ...noticeFields(lotDetails),
       ...(seller ? { seller } : {}),
       marketValueUsd: latest.marketValueUsd,
       photoAssessment: assessment,
@@ -278,6 +345,8 @@ class PhotoWorker {
         notViableReason: result.viable === false ? result.reason : null,
         photoStatus: result.photoStatus || null,
         photosAnalyzed: result.photosAnalyzed ?? null,
+        warnings: result.warnings || [],
+        biddable: result.biddable !== false,
         marketReference: latest.marketReference || null,
         // Вердикт, который придержали до появления снимков, теперь
         // подтверждён разбором фотографий и возвращается в карточку.

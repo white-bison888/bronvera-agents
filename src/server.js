@@ -8,6 +8,8 @@ const sharp = require("sharp");
 const BidCarsProvider = require("./providers/bidcars");
 const { calculateMaxBid } = require("./economics/max-bid");
 const { describeDamage } = require("./providers/damage-labels");
+const { checkSeller } = require("./providers/lot-requirements");
+const { noticeFields } = require("./providers/lot-notices");
 const history = require("./history/store");
 const LotPhotoCollector = require("./providers/lot-photos");
 const PhotoAssessor = require("./vision/photo-assessor");
@@ -109,6 +111,9 @@ const screenerListings = (body) => {
               priceToMarketPct: candidate.priceToMarketPct,
               repairRoomUsd: candidate.repairRoomUsd,
               profitWithoutPhotosUsd: candidate.profitAtExpectedUsd,
+              // SELECTOR должен видеть запрет ставки и плашки bid.cars.
+              warnings: candidate.warnings || [],
+              biddable: candidate.biddable !== false,
             },
           }
         : null;
@@ -262,13 +267,17 @@ app.post("/api/economics/max-bid", (req, res) => {
     // они нужны для запасной оценки ремонта, когда ASSESSOR её не дал.
     const listings = new Map();
 
-    // Продавца видно только на странице лота: он лежит в истории,
-    // куда его записал сбор фотографий, а в реестре его чаще нет.
+    // Продавца и плашки видно только на странице лота: они лежат в истории,
+    // куда их записал сбор фотографий, а в реестре их чаще нет.
     const sellers = new Map();
+    const notices = new Map();
 
     for (const entry of history.readAll()) {
       if (entry.lotDetails?.seller)
         sellers.set(String(entry.lotNumber), entry.lotDetails.seller);
+
+      if (entry.lotDetails)
+        notices.set(String(entry.lotNumber), noticeFields(entry.lotDetails));
     }
 
     const results = vehicles.map((vehicle) => {
@@ -280,12 +289,19 @@ app.post("/api/economics/max-bid", (req, res) => {
       // Разбор фотографий, если он уже делался для этого лота.
       const photoAssessment = photoAssessor.getCached(vehicle.lotNumber);
 
-      const seller = vehicle.seller || listing?.seller || sellers.get(String(vehicle.lotNumber));
+      /*
+       * У Copart в реестре продавец «---»: он не должен перебивать продавца,
+       * прочитанного со страницы лота (15.09 так «Non-insurance Company»
+       * терялся при пересчёте). Берём первого известного.
+       */
+      const candidates = [vehicle.seller, listing?.seller, sellers.get(String(vehicle.lotNumber))];
+      const seller = candidates.find(value => checkSeller(value).known) || candidates.find(Boolean);
 
       return calculateMaxBid(
         {
           ...(listing || {}),
           ...vehicle,
+          ...(notices.get(String(vehicle.lotNumber)) || {}),
           ...(seller ? { seller } : {}),
           ...(photoAssessment ? { photoAssessment } : {}),
         },
@@ -325,6 +341,9 @@ app.post("/api/economics/max-bid", (req, res) => {
             notViableReason: result.viable === false ? result.reason : null,
             photoStatus: result.photoStatus || null,
             photosAnalyzed: result.photosAnalyzed ?? null,
+            // Плашки bid.cars и запреты ставки: лот остаётся, но с пометкой.
+            warnings: result.warnings || [],
+            biddable: result.biddable !== false,
             /*
              * Решение выносит формула по прогнозу bid.cars (выбор Mikita
              * 14.09). Вердикт ORCHESTRATOR остаётся, только когда прогноза

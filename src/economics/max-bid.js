@@ -1,5 +1,6 @@
 const defaultRates = require("./rates");
 const { checkSeller } = require("../providers/lot-requirements");
+const { lotWarnings } = require("../providers/lot-notices");
 
 /*
  * РАСЧЁТ СДЕЛКИ: аукцион США → продажа в Беларуси.
@@ -156,7 +157,7 @@ const readForecast = (vehicle, rates) => {
   };
 };
 
-const calculateMaxBid = (vehicle, overrides = {}) => {
+const calculateDeal = (vehicle, overrides = {}) => {
   const rates = { ...defaultRates, ...overrides };
 
   /*
@@ -365,5 +366,15 @@ const calculateMaxBid = (vehicle, overrides = {}) => {
     },
   };
 };
+
+/*
+ * Плашки bid.cars и известные запреты не меняют расчёт и вердикт: лот не
+ * исключается (решение Mikita 15.09), но несёт предупреждения, а запрет
+ * ставки — пометку biddable: false. Добавляются к любому исходу расчёта.
+ */
+const calculateMaxBid = (vehicle, overrides = {}) => ({
+  ...calculateDeal(vehicle, overrides),
+  ...lotWarnings(vehicle),
+});
 
 module.exports = { calculateMaxBid };

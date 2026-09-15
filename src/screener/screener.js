@@ -7,6 +7,8 @@ const defaultQueue = require("../photos/queue");
 const { calculateMaxBid } = require("../economics/max-bid");
 const { fetchSearchSlice, mapSearchItem } = require("../providers/bidcars-search-api");
 const { withRun } = require("../costs/ledger");
+const { checkSeller } = require("../providers/lot-requirements");
+const { noticeFields } = require("../providers/lot-notices");
 const {
   countBy,
   evaluateLot,
@@ -367,8 +369,33 @@ class DailyScreener {
       && new Date(lot.lastSeenAt || lot.sourceFetchedAt || 0).getTime() >= since);
   }
 
+  /*
+   * Что уже прочитано со страниц лотов в прошлые визиты: продавец Copart
+   * (в выдаче у них «---») и плашки bid.cars. Без этого нестраховой лот,
+   * отсеянный вчера по странице, завтра снова попал бы в список.
+   */
+  withHistoryDetails(pool) {
+    const details = new Map();
+
+    for (const record of this.history.readAll()) {
+      if (record.lotDetails)
+        details.set(String(record.lotNumber), record.lotDetails);
+    }
+
+    return pool.map((lot) => {
+      const known = details.get(String(lot.lotNumber));
+
+      if (!known)
+        return lot;
+
+      const seller = checkSeller(lot.seller).known ? lot.seller : known.seller || lot.seller;
+
+      return { ...lot, ...noticeFields(known), ...(seller ? { seller } : {}) };
+    });
+  }
+
   async select(now) {
-    const pool = this.poolFromRegistry(now);
+    const pool = this.withHistoryDetails(this.poolFromRegistry(now));
     const excluded = [];
     const passed = [];
 
@@ -507,6 +534,9 @@ class DailyScreener {
       ageYears: result.assumptions?.ageYears ?? null,
       inTiers: entry ? entry.tiers : {},
       photoStatus: item.photoAssessment ? "assessed" : "queued",
+      // Лот не исключается, но запрет ставки и плашки bid.cars видны в списке.
+      warnings: result.warnings || [],
+      biddable: result.biddable !== false,
     };
   }
 
@@ -568,6 +598,8 @@ class DailyScreener {
         notViableReason: result.viable === false ? result.reason : null,
         photoStatus: result.photoStatus || null,
         photosAnalyzed: result.photosAnalyzed ?? null,
+        warnings: result.warnings || [],
+        biddable: result.biddable !== false,
         decision: result.verdict || null,
         decisionHeld: null,
         screener: {

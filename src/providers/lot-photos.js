@@ -3,6 +3,7 @@ const path = require("path");
 const { chromium } = require("playwright");
 const { inspectPhoto, MIN_FILE_BYTES } = require("../photos/quality");
 const { meterBrowserContext } = require("../costs/ledger");
+const { readLotNotices } = require("./lot-notices");
 
 /*
  * Снимки лота живут на трёх адресах. Пока торги идут — images.bid.cars.
@@ -388,6 +389,14 @@ class LotPhotoCollector {
 
     for (const [field, value] of Object.entries(timing)) {
       if (value !== null && value !== undefined)
+        details[field] = value;
+    }
+
+    // Плашки: запрет ставки, «не рекомендуем», прошлая продажа.
+    const notices = readLotNotices(text);
+
+    for (const [field, value] of Object.entries(notices)) {
+      if (Array.isArray(value) ? value.length : value)
         details[field] = value;
     }
 
