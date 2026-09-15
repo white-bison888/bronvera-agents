@@ -12,6 +12,8 @@
  * ближайшие дни.
  */
 
+const { meterBrowserContext } = require("../costs/ledger");
+
 const SEARCH_REQUEST_PATH = "/app/search/request";
 
 const MONTHS = {
@@ -186,6 +188,8 @@ const fetchSearchSlice = async (url, options = {}) => {
     ...(proxy ? { proxy } : {}),
   });
 
+  let meter = null;
+
   try {
     const context = await browser.newContext({
       userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/124 Safari/537.36",
@@ -194,6 +198,8 @@ const fetchSearchSlice = async (url, options = {}) => {
       extraHTTPHeaders: { "Accept-Language": "en-US,en;q=0.9" },
       ignoreHTTPSErrors: Boolean(proxy),
     });
+
+    meter = meterBrowserContext(context, { source: "выдача bid.cars", viaProxy: Boolean(proxy) });
 
     const page = await context.newPage();
 
@@ -243,6 +249,7 @@ const fetchSearchSlice = async (url, options = {}) => {
       activeCount: Number.isFinite(Number(count?.active)) ? Number(count.active) : null,
     };
   } finally {
+    await meter?.finish().catch(() => {});
     await browser.close();
   }
 };

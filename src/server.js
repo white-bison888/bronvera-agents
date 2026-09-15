@@ -16,12 +16,28 @@ const PhotoWorker = require("./photos/worker");
 const BidWatcher = require("./photos/bid-watcher");
 const { MinskMarketPrices } = require("./market/minsk-prices");
 const DailyScreener = require("./screener/screener");
+const costLedger = require("./costs/ledger");
+const { createDifyUsage, UUID } = require("./costs/dify-usage");
+const { buildPeriodSummary, buildRunCost, minskDay, periodBounds } = require("./costs/report");
 
 const app = express();
 const PORT = process.env.PORT || 3001;
 
 app.use(cors());
 app.use(express.json());
+
+/*
+ * Номер прогона Dify, от имени которого пришёл запрос: заголовком
+ * X-Workflow-Run-Id или полем runId. Всё, что бэкенд потратит внутри
+ * запроса (трафик прокси, разбор фото), записывается на этот прогон.
+ */
+app.use((req, res, next) => {
+  const runId = String(req.get("x-workflow-run-id") || req.body?.runId || "").trim();
+
+  costLedger.withRun(/^[\w:.-]{1,80}$/.test(runId) ? runId : null, next);
+});
+
+const difyUsage = createDifyUsage();
 
 const bidCars = new BidCarsProvider();
 const photoCollector = new LotPhotoCollector();
@@ -877,6 +893,71 @@ app.get("/api/screener/today", (req, res) => {
     running: Boolean(screener.running),
     day: state ? screener.withLiveState(state) : null,
   });
+});
+
+/*
+ * Стоимость одного поиска в долларах: шаги ИИ его прогона Dify, трафик
+ * прокси и разбор фото с его номером, доля сервера и сайта за время работы.
+ * pendingPhotos > 0 — фото этого поиска ещё разбираются, сумма дополнится.
+ */
+app.get("/api/costs/run/:runId", async (req, res) => {
+  const { runId } = req.params;
+
+  if (!UUID.test(runId))
+    return res.status(400).json({ success: false, error: "Номер прогона Dify должен быть UUID" });
+
+  let dify = null;
+  let difyError = null;
+
+  try {
+    dify = await difyUsage.run(runId);
+  } catch (error) {
+    difyError = error.message;
+  }
+
+  let pendingPhotos = 0;
+
+  try {
+    pendingPhotos = photoQueue.read().items
+      .filter(item => item.runId === runId && item.status === "pending").length;
+  } catch {
+    // Очередь недоступна — сумму покажем без пометки о досчёте.
+  }
+
+  res.json({
+    success: true,
+    ...buildRunCost({ runId, dify, entries: costLedger.readEntries({ runId }), pendingPhotos }),
+    difyError,
+  });
+});
+
+// Итоги дня и месяца по Минску; ?day=YYYY-MM-DD, по умолчанию сегодня.
+app.get("/api/costs/summary", async (req, res) => {
+  const day = /^\d{4}-\d{2}-\d{2}$/.test(String(req.query.day || ""))
+    ? String(req.query.day)
+    : minskDay(new Date());
+
+  const result = { success: true, date: day };
+
+  for (const type of ["day", "month"]) {
+    const period = periodBounds(type, day);
+
+    let dify = null;
+
+    try {
+      dify = await difyUsage.period(period.from, period.to);
+    } catch (error) {
+      result.difyError = error.message;
+    }
+
+    result[type] = buildPeriodSummary({
+      period,
+      dify,
+      entries: costLedger.readEntries({ from: period.from, to: period.to }),
+    });
+  }
+
+  res.json(result);
 });
 
 app.post("/api/screener/run", (req, res) => {

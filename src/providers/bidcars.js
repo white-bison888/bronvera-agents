@@ -5,6 +5,7 @@ const { chromium } = require("playwright");
 const { parseAuctionTiming } = require("./auction-timing");
 const { isRunAndDrive, checkSeller } = require("./lot-requirements");
 const { auctionWindow } = require("./auction-window");
+const { meterBrowserContext } = require("../costs/ledger");
 
 class BidCarsRateLimitError extends Error {
   constructor(message, retryAfterSeconds = null) {
@@ -1020,6 +1021,12 @@ class BidCarsProvider {
     const page =
       await context.newPage();
 
+    // Трафик через прокси оплачивается по объёму — его цена входит в стоимость поиска.
+    const meter = meterBrowserContext(context, {
+      source: "каталог bid.cars",
+      viaProxy: Boolean(proxy),
+    });
+
     const collected = [];
 
     let lastSourceUrl = null;
@@ -1369,6 +1376,8 @@ class BidCarsProvider {
         stopReason,
       };
     } finally {
+      await meter.finish().catch(() => {});
+
       await page
         .close()
         .catch(() => {});

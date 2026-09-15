@@ -1,6 +1,7 @@
 const { chromium } = require("playwright");
 const history = require("../history/store");
 const { parseAuctionTiming } = require("../providers/auction-timing");
+const { meterBrowserContext, withRun } = require("../costs/ledger");
 
 /*
  * Ставка на аукционе живёт своей жизнью: в момент анализа она может быть
@@ -119,7 +120,8 @@ class BidWatcher {
     this.running = true;
 
     try {
-      await this.checkLots(lots);
+      // Трафик слежения — отдельная строка в итогах дня, а не расход поиска.
+      await withRun("bid-watcher", () => this.checkLots(lots));
     } catch (error) {
       console.error("Слежение за ставками:", error.message);
     } finally {
@@ -152,6 +154,8 @@ class BidWatcher {
     });
 
     const page = await context.newPage();
+
+    const meter = meterBrowserContext(context, { source: "слежение за ставками", viaProxy: Boolean(proxy) });
 
     try {
       for (const item of lots) {
@@ -213,6 +217,7 @@ class BidWatcher {
         await page.waitForTimeout(4000);
       }
     } finally {
+      await meter.finish().catch(() => {});
       await browser.close();
     }
 

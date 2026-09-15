@@ -1,4 +1,5 @@
 const { measuredCall, measureRun } = require("../observability/usage");
+const { recordVision } = require("../costs/ledger");
 const fs = require("fs");
 const { createHash } = require("node:crypto");
 const path = require("path");
@@ -127,6 +128,15 @@ class PhotoAssessor {
         }
 
         return body;
+      });
+
+    // Токены пишем и за непригодные снимки: запрос к модели всё равно был.
+    if (payload && (payload.available || payload.usage))
+      recordVision({
+        lotNumber: lot.lotNumber,
+        provider: payload.provider,
+        model: payload.usage?.modelVersion || payload.model,
+        usage: payload.usage,
       });
 
     /*

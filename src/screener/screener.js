@@ -6,6 +6,7 @@ const defaultHistory = require("../history/store");
 const defaultQueue = require("../photos/queue");
 const { calculateMaxBid } = require("../economics/max-bid");
 const { fetchSearchSlice, mapSearchItem } = require("../providers/bidcars-search-api");
+const { withRun } = require("../costs/ledger");
 const {
   countBy,
   evaluateLot,
@@ -161,7 +162,10 @@ class DailyScreener {
     if (this.running)
       return this.running;
 
-    this.running = this.execute(options).finally(() => {
+    // Трафик и разбор фото утреннего отбора — отдельная строка в итогах дня.
+    const day = minskDay((options.now || (() => new Date()))());
+
+    this.running = withRun(`screener-${day}`, () => this.execute(options)).finally(() => {
       this.running = null;
     });
 

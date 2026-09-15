@@ -249,6 +249,22 @@ def _shrink(raw):
         return raw
 
 
+def _gemini_usage(response):
+    """Расход запроса для учёта стоимости поиска.
+
+    Рассуждения модели Google списывает как выходные токены. Версию берём
+    из ответа: алиас *-latest Google переключает сам, и цена может смениться.
+    """
+    meta = getattr(response, 'usage_metadata', None)
+    if meta is None:
+        return None
+    return {
+        "inputTokens": meta.prompt_token_count or 0,
+        "outputTokens": (meta.candidates_token_count or 0) + (meta.thoughts_token_count or 0),
+        "modelVersion": getattr(response, 'model_version', None),
+    }
+
+
 def _gemini_call(images, context):
     from google import genai
     from google.genai import types
@@ -270,7 +286,7 @@ def _gemini_call(images, context):
                     model=m, contents=parts, config=config)
 
             response = _with_retry(attempt, f"Gemini {model_name}")
-            return _extract_json(response.text), model_name
+            return _extract_json(response.text), model_name, _gemini_usage(response)
         except BudgetExhausted:
             # Запасная модель тратит тот же бюджет — перебирать смысла нет.
             raise
@@ -307,7 +323,10 @@ def _gigachat_call(images, context):
             })
 
         answer = _with_retry(attempt, "GigaChat")
-        return _extract_json(answer.choices[0].message.content), GIGACHAT_MODEL
+        usage = getattr(answer, 'usage', None)
+        return _extract_json(answer.choices[0].message.content), GIGACHAT_MODEL, (
+            {"inputTokens": usage.prompt_tokens, "outputTokens": usage.completion_tokens,
+             "modelVersion": GIGACHAT_MODEL} if usage else None)
 
 
 PROVIDERS = {
@@ -340,7 +359,7 @@ def analyze(images, lot_number="unknown", context=""):
     prepared = [_shrink(raw) for raw in selected]
 
     try:
-        assessment, model_name = call(prepared, context)
+        assessment, model_name, usage = call(prepared, context)
     except BudgetExhausted as exc:
         logger.warning(f"лот {lot_number}: {exc}")
         # deferred — сигнал очереди отложить лот, а не признать его чистым.
@@ -354,6 +373,7 @@ def analyze(images, lot_number="unknown", context=""):
             "available": False,
             "provider": PROVIDER,
             "model": model_name,
+            "usage": usage,
             "reason": f"снимки непригодны: {assessment.get('notes') or 'содержимое не распознано'}",
         }
 
@@ -361,6 +381,7 @@ def analyze(images, lot_number="unknown", context=""):
         "available": True,
         "provider": PROVIDER,
         "model": model_name,
+        "usage": usage,
         "photosAnalyzed": len(prepared),
         "assessment": assessment,
     }

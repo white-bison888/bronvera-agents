@@ -2,6 +2,7 @@ const fs = require("fs");
 const path = require("path");
 const { chromium } = require("playwright");
 const { inspectPhoto, MIN_FILE_BYTES } = require("../photos/quality");
+const { meterBrowserContext } = require("../costs/ledger");
 
 /*
  * Снимки лота живут на трёх адресах. Пока торги идут — images.bid.cars.
@@ -227,7 +228,7 @@ class LotPhotoCollector {
     console.log(`📸 Кадры по ссылкам из выдачи: ${pending.length} лот(ов)`);
 
     const cache = this.loadCache();
-    const { browser, context, page, intercepted } = await this.openBrowser();
+    const { browser, context, page, intercepted, meter } = await this.openBrowser();
 
     try {
       const response = await page.goto(SEARCH_PAGE_URL, { waitUntil: "domcontentloaded", timeout: 90000 });
@@ -260,6 +261,7 @@ class LotPhotoCollector {
         }
       }
     } finally {
+      await meter.finish().catch(() => {});
       await browser.close();
     }
 
@@ -341,7 +343,10 @@ class LotPhotoCollector {
       }
     });
 
-    return { browser, context, page, intercepted };
+    // Трафик через прокси оплачивается по объёму — его цена входит в стоимость поиска.
+    const meter = meterBrowserContext(context, { source: "фото лотов", viaProxy: Boolean(proxy) });
+
+    return { browser, context, page, intercepted, meter };
   }
 
   async extractLotDetails(page) {
@@ -650,7 +655,7 @@ class LotPhotoCollector {
     if (missing.length === 0)
       return result;
 
-    const { browser, context, page, intercepted } = await this.openBrowser();
+    const { browser, context, page, intercepted, meter } = await this.openBrowser();
 
     try {
       // Прогрев: заходим как обычный посетитель, с главной.
@@ -776,6 +781,7 @@ class LotPhotoCollector {
         );
       }
     } finally {
+      await meter.finish().catch(() => {});
       await browser.close();
     }
 

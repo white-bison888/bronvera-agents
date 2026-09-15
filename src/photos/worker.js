@@ -2,6 +2,7 @@ const queue = require("./queue");
 const history = require("../history/store");
 const { calculateMaxBid } = require("../economics/max-bid");
 const { checkSeller } = require("../providers/lot-requirements");
+const { withRun } = require("../costs/ledger");
 
 /*
  * Bid.Cars закрывает доступ уже со второго лота подряд, поэтому сбор
@@ -104,7 +105,8 @@ class PhotoWorker {
     this.running = true;
 
     try {
-      await this.processLot(item.lotNumber);
+      // Расход на сбор и разбор фото относится к поиску, поставившему лот в очередь.
+      await withRun(item.runId, () => this.processLot(item.lotNumber));
     } catch (error) {
       console.error(`   ${item.lotNumber}: ${error.message}`);
 
