@@ -40,6 +40,7 @@ const screener = new DailyScreener({
   bidCars,
   marketPrices,
   photoAssessor,
+  photoCollector,
 });
 
 /*

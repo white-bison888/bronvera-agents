@@ -192,6 +192,11 @@ class LotPhotoCollector {
       // Пробуем подгрузить кадры с той страницы, что уже открыта.
     }
 
+    return this.loadKnownUrls(page, context, lotNumber, urls, intercepted);
+  }
+
+  // Кадры подгружаются картинками с уже открытой страницы bid.cars.
+  async loadKnownUrls(page, context, lotNumber, urls, intercepted) {
     // По одному: пачка из двадцати кадров разом похожа на выкачку.
     for (const url of urls) {
       await this.warmMissingImages(page, [url]);
@@ -201,6 +206,142 @@ class LotPhotoCollector {
     await page.waitForTimeout(1500);
 
     return this.savePhotos(context, lotNumber, urls, intercepted);
+  }
+
+  /*
+   * Кадры кандидатов утреннего отбора без визитов на страницы лотов: одна
+   * страница поиска и ссылки из выдачи. Страницы лотов bid.cars закрывает
+   * через раз, а очередь ходит на них по лоту в четыре минуты — к торгам
+   * фото могли не успеть. Что не скачалось здесь, соберёт очередь.
+   */
+  async collectFromListing(lots = []) {
+    const pending = lots
+      .map(lot => ({ lot, urls: this.knownPhotoUrls(lot) }))
+      .filter(({ lot, urls }) => urls.length > 0 && this.readPhotoDir(lot.lotNumber).length === 0);
+
+    const result = {};
+
+    if (pending.length === 0)
+      return result;
+
+    console.log(`📸 Кадры по ссылкам из выдачи: ${pending.length} лот(ов)`);
+
+    const cache = this.loadCache();
+    const { browser, context, page, intercepted } = await this.openBrowser();
+
+    try {
+      const response = await page.goto(SEARCH_PAGE_URL, { waitUntil: "domcontentloaded", timeout: 90000 });
+
+      if (!response || !response.ok()) {
+        console.log(`   страница поиска недоступна (${response ? response.status() : "нет ответа"}) — кадры соберёт очередь`);
+        return result;
+      }
+
+      await page.waitForTimeout(3000);
+
+      for (const { lot, urls } of pending) {
+        const key = String(lot.lotNumber);
+
+        intercepted.clear();
+
+        try {
+          const files = await this.loadKnownUrls(page, context, key, urls, intercepted);
+
+          result[key] = files;
+
+          if (files.length > 0) {
+            cache[key] = { files, sourceUrls: urls, via: "search-page", fetchedAt: new Date().toISOString() };
+            this.saveCache(cache);
+          }
+
+          console.log(`   ${key}: по ссылкам из выдачи сохранено ${files.length} из ${urls.length}`);
+        } catch (error) {
+          console.log(`   ${key}: ошибка — ${error.message}`);
+        }
+      }
+    } finally {
+      await browser.close();
+    }
+
+    return result;
+  }
+
+  /*
+   * Аукционы закрывают доступ адресам дата-центров: с сервера
+   * страницы лотов отдают проверку Cloudflare, которая не проходится.
+   * Резидентный прокси подставляет адрес обычного провайдера —
+   * без него сбор на сервере невозможен.
+   */
+  async openBrowser() {
+    const proxy = process.env.PROXY_SERVER
+      ? {
+          server: process.env.PROXY_SERVER,
+          ...(process.env.PROXY_USERNAME
+            ? {
+                username: process.env.PROXY_USERNAME,
+                password: process.env.PROXY_PASSWORD || "",
+              }
+            : {}),
+        }
+      : undefined;
+
+    if (proxy)
+      console.log(`   через прокси: ${proxy.server}`);
+
+    const browser = await chromium.launch({
+      headless: true,
+      args: ["--disable-blink-features=AutomationControlled"],
+      ...(proxy ? { proxy } : {}),
+    });
+
+    const context = await browser.newContext({
+      userAgent:
+        "Mozilla/5.0 " +
+        "(Macintosh; Intel Mac OS X 10_15_7) " +
+        "AppleWebKit/537.36 " +
+        "Chrome/124 Safari/537.36",
+
+      locale: "pl-PL",
+
+      viewport: { width: 1440, height: 1000 },
+
+      extraHTTPHeaders: {
+        "Accept-Language": "pl-PL,pl;q=0.9,en;q=0.8",
+      },
+
+      // Резидентный прокси подменяет сертификаты — без этого
+      // браузер обрывает соединение на проверке подлинности.
+      ignoreHTTPSErrors: Boolean(proxy),
+    });
+
+    // Признак автоматизации, по которому защита узнаёт робота.
+    await context.addInitScript(() => {
+      Object.defineProperty(navigator, "webdriver", { get: () => undefined });
+    });
+
+    const page = await context.newPage();
+
+    // Снимки, которые браузер скачал сам при отрисовке страницы.
+    // Так они достаются бесплатно, без повторных запросов к Bid.Cars.
+    const intercepted = new Map();
+
+    page.on("response", async (response) => {
+      const url = response.url();
+
+      if (!isPhotoUrl(url))
+        return;
+
+      if (!response.ok())
+        return;
+
+      try {
+        intercepted.set(url, await response.body());
+      } catch {
+        // Тело могло быть уже недоступно — не страшно, докачаем отдельно.
+      }
+    });
+
+    return { browser, context, page, intercepted };
   }
 
   async extractLotDetails(page) {
@@ -509,79 +650,7 @@ class LotPhotoCollector {
     if (missing.length === 0)
       return result;
 
-    /*
-     * Аукционы закрывают доступ адресам дата-центров: с сервера
-     * страницы лотов отдают проверку Cloudflare, которая не проходится.
-     * Резидентный прокси подставляет адрес обычного провайдера —
-     * без него сбор на сервере невозможен.
-     */
-    const proxy = process.env.PROXY_SERVER
-      ? {
-          server: process.env.PROXY_SERVER,
-          ...(process.env.PROXY_USERNAME
-            ? {
-                username: process.env.PROXY_USERNAME,
-                password: process.env.PROXY_PASSWORD || "",
-              }
-            : {}),
-        }
-      : undefined;
-
-    if (proxy)
-      console.log(`   через прокси: ${proxy.server}`);
-
-    const browser = await chromium.launch({
-      headless: true,
-      args: ["--disable-blink-features=AutomationControlled"],
-      ...(proxy ? { proxy } : {}),
-    });
-
-    const context = await browser.newContext({
-      userAgent:
-        "Mozilla/5.0 " +
-        "(Macintosh; Intel Mac OS X 10_15_7) " +
-        "AppleWebKit/537.36 " +
-        "Chrome/124 Safari/537.36",
-
-      locale: "pl-PL",
-
-      viewport: { width: 1440, height: 1000 },
-
-      extraHTTPHeaders: {
-        "Accept-Language": "pl-PL,pl;q=0.9,en;q=0.8",
-      },
-
-      // Резидентный прокси подменяет сертификаты — без этого
-      // браузер обрывает соединение на проверке подлинности.
-      ignoreHTTPSErrors: Boolean(proxy),
-    });
-
-    // Признак автоматизации, по которому защита узнаёт робота.
-    await context.addInitScript(() => {
-      Object.defineProperty(navigator, "webdriver", { get: () => undefined });
-    });
-
-    const page = await context.newPage();
-
-    // Снимки, которые браузер скачал сам при отрисовке страницы.
-    // Так они достаются бесплатно, без повторных запросов к Bid.Cars.
-    const intercepted = new Map();
-
-    page.on("response", async (response) => {
-      const url = response.url();
-
-      if (!isPhotoUrl(url))
-        return;
-
-      if (!response.ok())
-        return;
-
-      try {
-        intercepted.set(url, await response.body());
-      } catch {
-        // Тело могло быть уже недоступно — не страшно, докачаем отдельно.
-      }
-    });
+    const { browser, context, page, intercepted } = await this.openBrowser();
 
     try {
       // Прогрев: заходим как обычный посетитель, с главной.
@@ -669,6 +738,16 @@ class LotPhotoCollector {
 
             if (files.length > 0)
               console.log(`   ${key}: файлы закрыты, снято с экрана`);
+          }
+
+          // Живые кадры images.bid.cars закрыты — пробуем полноразмерные из выдачи.
+          if (files.length === 0) {
+            const known = this.knownPhotoUrls(lot).filter(url => !urls.includes(url));
+
+            if (known.length > 0) {
+              files = await this.loadKnownUrls(page, context, key, known, intercepted);
+              console.log(`   ${key}: по ссылкам из выдачи сохранено ${files.length} из ${known.length}`);
+            }
           }
 
           result[key] = files;

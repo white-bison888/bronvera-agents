@@ -143,10 +143,18 @@ test('daily run scans slices with retries, writes the day file, history and phot
     };
   };
 
+  const downloaded = [];
+
   const screener = new DailyScreener({
     bidCars,
     marketPrices: { lookup: async () => ({ marketValueUsd: 38000, analogsCount: 6, match: { level: 'год ±1, похожий пробег' } }) },
     photoAssessor: { getCached: () => null },
+    photoCollector: {
+      collectFromListing: async (lots) => {
+        downloaded.push(...lots.map(lot => [lot.lotNumber, lot.images.length]));
+        return { '0-1': ['1.jpg'], '1-3': [] };
+      },
+    },
     fetchSlice,
     config: { ...config, slices: config.slices.slice(0, 4) },
     sleep: async () => {},
@@ -159,6 +167,11 @@ test('daily run scans slices with retries, writes the day file, history and phot
   assert.equal(state.slices.find(s => s.label === 'Model 3 до 2020').attempts, 2);
   assert.ok(state.slices.every(s => s.status === 'ok'));
   assert.equal(state.excluded['затопление'], 1);
+
+  // Кадры кандидатов скачиваются по ссылкам из выдачи ещё до очереди.
+  assert.deepEqual(downloaded.map(([lot]) => lot).sort(), ['0-1', '1-3']);
+  assert.ok(downloaded.every(([, images]) => images === 1));
+  assert.equal(state.photosFromListing, 1);
 
   const [upTo15k, upTo10k] = state.tiers;
   assert.deepEqual(upTo15k.candidates.map(c => c.lotNumber), ['0-1', '1-3']);

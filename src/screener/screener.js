@@ -30,6 +30,7 @@ class DailyScreener {
     bidCars,
     marketPrices,
     photoAssessor,
+    photoCollector = null,
     history = defaultHistory,
     photoQueue = defaultQueue,
     fetchSlice = fetchSearchSlice,
@@ -39,7 +40,7 @@ class DailyScreener {
     log = (...args) => console.log(...args),
   }) {
     Object.assign(this, {
-      bidCars, marketPrices, photoAssessor, history, photoQueue,
+      bidCars, marketPrices, photoAssessor, photoCollector, history, photoQueue,
       fetchSlice, config, dataDir, sleep, log,
     });
 
@@ -426,6 +427,7 @@ class DailyScreener {
       }
     }
 
+    const photosFromListing = await this.downloadPhotos([...chosen.values()]);
     const photoQueued = this.handOver([...chosen.values()], now);
 
     return {
@@ -433,6 +435,7 @@ class DailyScreener {
       passedPrefilter: passed.length,
       priced: evaluated.length,
       excluded: countBy(excluded),
+      photosFromListing,
       photoQueued,
       tiers: tiers.map(tier => ({
         id: tier.id,
@@ -441,6 +444,28 @@ class DailyScreener {
         candidates: tier.candidates.map(item => this.describe(item, chosen.get(item.lot.lotNumber))),
       })),
     };
+  }
+
+  /*
+   * Кадры кандидатов — сразу, по ссылкам из выдачи. Очередь потом найдёт
+   * их на диске и перейдёт к разбору, не заходя на закрытые страницы лотов.
+   * Сбой здесь не роняет отбор: недостающее соберёт очередь.
+   */
+  async downloadPhotos(entries) {
+    const lots = entries.filter(entry => !entry.photoAssessment).map(entry => entry.lot);
+
+    if (!this.photoCollector?.collectFromListing || lots.length === 0)
+      return 0;
+
+    try {
+      const saved = await this.photoCollector.collectFromListing(lots);
+
+      return Object.values(saved).filter(files => files.length > 0).length;
+    } catch (error) {
+      this.log(`   кадры по ссылкам из выдачи не скачались: ${error.message}`);
+
+      return 0;
+    }
   }
 
   describe(item, entry) {
