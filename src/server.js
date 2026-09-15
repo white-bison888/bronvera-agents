@@ -15,6 +15,7 @@ const photoQueue = require("./photos/queue");
 const PhotoWorker = require("./photos/worker");
 const BidWatcher = require("./photos/bid-watcher");
 const { MinskMarketPrices } = require("./market/minsk-prices");
+const DailyScreener = require("./screener/screener");
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -35,6 +36,12 @@ const photoWorker = new PhotoWorker({
 
 const bidWatcher = new BidWatcher({ bidCars });
 
+const screener = new DailyScreener({
+  bidCars,
+  marketPrices,
+  photoAssessor,
+});
+
 /*
  * Последний поиск помним, чтобы интерфейс мог показать покрытие
  * фотографиями по текущему запросу, не зная сам о его критериях —
@@ -49,7 +56,72 @@ app.get("/health", (req, res) => {
   });
 });
 
+/*
+ * Список утреннего отбора в том же виде, что и выдача поиска: запрос
+ * «лучшие лоты дня» в Dify идёт дальше обычным путём — SELECTOR, фото,
+ * цены, расчёт. Порог цены выбирает список: до $10 000 или до $15 000.
+ */
+const screenerListings = (body) => {
+  const state = screener.latestDay();
+
+  if (!state || !Array.isArray(state.tiers))
+    return { state, tier: null, listings: [] };
+
+  const wanted = Number(body.maxPriceUsd);
+
+  const tier = [...state.tiers]
+    .sort((a, b) => a.maxExpectedPriceUsd - b.maxExpectedPriceUsd)
+    .find(item => Number.isFinite(wanted) && wanted > 0 && item.maxExpectedPriceUsd >= wanted)
+    || state.tiers.find(item => item.id === body.tier)
+    || [...state.tiers].sort((a, b) => b.maxExpectedPriceUsd - a.maxExpectedPriceUsd)[0];
+
+  const listings = tier.candidates
+    .map((candidate) => {
+      const listing = bidCars.findByLotNumber(candidate.lotNumber);
+
+      // Цифры отбора — чтобы SELECTOR не угадывал цену рынка и прибыль сам.
+      return listing
+        ? {
+            ...listing,
+            screener: {
+              day: state.day,
+              tier: tier.label,
+              rank: candidate.rank,
+              expectedPriceUsd: candidate.expectedPriceUsd,
+              marketValueBelarusUsd: candidate.marketValueUsd,
+              priceToMarketPct: candidate.priceToMarketPct,
+              repairRoomUsd: candidate.repairRoomUsd,
+              profitWithoutPhotosUsd: candidate.profitAtExpectedUsd,
+            },
+          }
+        : null;
+    })
+    .filter(Boolean)
+    // Торги прошли — ставку делать поздно, даже если утром лот был в списке.
+    .filter(listing => !listing.saleDate || new Date(listing.saleDate) > new Date());
+
+  return { state, tier, listings };
+};
+
 app.post("/api/cars/search", async (req, res) => {
+  if (req.body?.mode === "screener") {
+    const { state, tier, listings } = screenerListings(req.body);
+
+    console.log(`\n🗓️ Список дня${tier ? ` ${tier.label}` : ""}: ${listings.length} лот(ов)`);
+
+    return res.json({
+      success: true,
+      count: listings.length,
+      filters: { mode: "screener", tier: tier?.id || null },
+      meta: {
+        screenerDay: state?.day || null,
+        screenerStatus: state?.status || "not_run",
+        tier: tier?.label || null,
+      },
+      listings,
+    });
+  }
+
   try {
     const {
       make = null,
@@ -791,6 +863,33 @@ app.post("/api/history/actual", (req, res) => {
   });
 });
 
+/*
+ * Утренний отбор: список дня с тем, что стало с кандидатами потом, и
+ * ручной запуск. Скан идёт минут пятнадцать с паузами, поэтому запуск
+ * отвечает сразу, а результат читается отсюда же.
+ */
+app.get("/api/screener/today", (req, res) => {
+  const state = screener.latestDay();
+
+  res.json({
+    success: true,
+    running: Boolean(screener.running),
+    day: state ? screener.withLiveState(state) : null,
+  });
+});
+
+app.post("/api/screener/run", (req, res) => {
+  const alreadyRunning = Boolean(screener.running);
+
+  screener.run().catch(error => console.error("Screener error:", error.message));
+
+  res.status(202).json({
+    success: true,
+    started: !alreadyRunning,
+    running: true,
+  });
+});
+
 app.listen(PORT, () => {
   console.log(
     `BRONVERA API running on http://localhost:${PORT}`
@@ -798,4 +897,5 @@ app.listen(PORT, () => {
 
   photoWorker.start();
   bidWatcher.start();
+  screener.start();
 });

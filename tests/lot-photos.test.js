@@ -37,3 +37,18 @@ test('live lot photos keep coming from images.bid.cars, previews only as a last 
   assert.equal(collector.extractPhotoUrls(previewsOnly, '0-46009893').length, 1);
   assert.deepEqual(collector.extractPhotoUrls('<img src="https://bid.cars/img/logo.jpg">', '0-46009893'), []);
 });
+
+test('photo links from the search listing are the fallback set, catalog icons are ignored', () => {
+  const lot = {
+    lotNumber: '0-45283876',
+    images: [
+      'https://pluto.bid.car/0-45283876/2023-Tesla-Model-3-5YJ3E1EA7PF482757-1.jpg',
+      'https://pluto.bid.car/0-45283876/2023-Tesla-Model-3-5YJ3E1EA7PF482757-2.jpg',
+      'https://bid.cars/img/upd/icons/key.svg',
+    ],
+  };
+
+  assert.deepEqual(collector.knownPhotoUrls(lot), lot.images.slice(0, 2));
+  assert.deepEqual(collector.knownPhotoUrls({ lotNumber: '1-1', images: ['https://bid.cars/images/cal.svg'] }), []);
+  assert.deepEqual(collector.knownPhotoUrls({ lotNumber: '1-1' }), []);
+});

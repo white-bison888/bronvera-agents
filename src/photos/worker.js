@@ -125,8 +125,9 @@ class PhotoWorker {
 
     console.log(`\n📸 Фоновый сбор: ${lotNumber}`);
 
+    // Ссылки на кадры из выдачи поиска — запасной путь, если страница лота закрыта.
     const photos = await this.photoCollector.collect([
-      { lotNumber, url: listing.url },
+      { lotNumber, url: listing.url, images: listing.images },
     ]);
 
     const details = (this.photoCollector.takeDetails?.() || {})[String(lotNumber)];
@@ -283,6 +284,8 @@ class PhotoWorker {
           : latest.decision),
         finalScore: latest.finalScore,
         confidence: latest.confidence,
+        // Метка утреннего отбора нужна пересмотру пилота и после разбора фото.
+        ...(latest.screener ? { screener: latest.screener } : {}),
         refinedByPhotos: true,
       },
     ]);

@@ -18,6 +18,8 @@ const PHOTO_HOST_PRIORITY = ["images.bid.cars", "pluto.bid.car", "mercury.bid.ca
 const isPhotoUrl = url => PHOTO_HOST_PRIORITY.some(host => url.startsWith(`https://${host}/`))
   && url.endsWith(".jpg");
 
+const SEARCH_PAGE_URL = "https://bid.cars/en/search/results?search-type=filters&type=Automobile&status=Active";
+
 const { parseAuctionTiming } = require("./auction-timing");
 
 /*
@@ -159,6 +161,46 @@ class LotPhotoCollector {
     return this.maxPhotosPerLot > 0
       ? unique.slice(0, this.maxPhotosPerLot)
       : unique;
+  }
+
+  /*
+   * Ссылки на кадры, известные до визита: выдача поиска присылает их
+   * списком (img_large). Разбираются тем же правилом, что и разметка
+   * страницы, — свои кадры, лучший адрес.
+   */
+  knownPhotoUrls(lot) {
+    const images = Array.isArray(lot?.images) ? lot.images.filter(isPhotoUrl) : [];
+
+    return images.length ? this.extractPhotoUrls(images.join(" "), lot.lotNumber) : [];
+  }
+
+  /*
+   * Запасной путь, когда страница лота закрыта (403). Страницу поиска
+   * bid.cars закрывает редко, а кадры, запрошенные с неё как картинки,
+   * отдаются в полном размере (проверено 15.09: 6 из 6). По прямой ссылке
+   * те же файлы дают 403.
+   */
+  async collectFromKnownUrls(page, context, lotNumber, urls, intercepted) {
+    try {
+      const response = await page.goto(SEARCH_PAGE_URL, { waitUntil: "domcontentloaded", timeout: 90000 });
+
+      if (!response || !response.ok())
+        console.log(`   ${lotNumber}: страница поиска тоже недоступна (${response ? response.status() : "нет ответа"})`);
+
+      await page.waitForTimeout(3000);
+    } catch {
+      // Пробуем подгрузить кадры с той страницы, что уже открыта.
+    }
+
+    // По одному: пачка из двадцати кадров разом похожа на выкачку.
+    for (const url of urls) {
+      await this.warmMissingImages(page, [url]);
+      await page.waitForTimeout(300);
+    }
+
+    await page.waitForTimeout(1500);
+
+    return this.savePhotos(context, lotNumber, urls, intercepted);
   }
 
   async extractLotDetails(page) {
@@ -573,6 +615,21 @@ class LotPhotoCollector {
             console.log(`   ${key}: страница недоступна (${status})`);
 
             result[key] = [];
+
+            const known = this.knownPhotoUrls(lot);
+
+            if (known.length > 0) {
+              const files = await this.collectFromKnownUrls(page, context, key, known, intercepted);
+
+              result[key] = files;
+
+              if (files.length > 0) {
+                cache[key] = { files, sourceUrls: known, via: "search-page", fetchedAt: new Date().toISOString() };
+                this.saveCache(cache);
+              }
+
+              console.log(`   ${key}: по ссылкам из выдачи сохранено ${files.length} из ${known.length}`);
+            }
 
             // Отказ означает, что нас заметили: ждём заметно дольше.
             await page.waitForTimeout(this.delayMs * 3);

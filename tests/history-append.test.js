@@ -10,7 +10,7 @@ test('a new estimate of a sold lot keeps its auction result and manual prices', 
   process.chdir(dir);
   try {
     const history = require('../src/history/store');
-    history.appendRun([{ lotNumber: 'A', maxBidUsd: 5000 }, { lotNumber: 'B', maxBidUsd: 7000 }]);
+    history.appendRun([{ lotNumber: 'A', maxBidUsd: 5000, screener: { day: '2026-09-15' } }, { lotNumber: 'B', maxBidUsd: 7000 }]);
     history.setActual('A', { soldPriceUsd: 13225, soldAt: '2026-09-14', note: 'Final bid на bid.cars' });
     history.setMarketReference('A', { belarusPriceUsd: 21000 });
 
@@ -19,7 +19,9 @@ test('a new estimate of a sold lot keeps its auction result and manual prices', 
     const [, , freshA, freshB] = history.readAll();
     assert.equal(freshA.actual.soldPriceUsd, 13225);
     assert.equal(freshA.marketReference.belarusPriceUsd, 21000);
+    assert.equal(freshA.screener.day, '2026-09-15');
     assert.equal(freshB.actual, null);
+    assert.equal('screener' in freshB, false);
 
     const lotA = history.buildSummary().comparisons.find(item => item.lotNumber === 'A');
     assert.equal(lotA.maxBidUsd, 7069);
