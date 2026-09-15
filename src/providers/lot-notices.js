@@ -8,6 +8,8 @@
  * предупреждения, а запрет ставки делает лот «недоступным для ставки».
  */
 
+const { checkSeller } = require("./lot-requirements");
+
 const flat = text => String(text || "").replace(/\s+/g, " ").trim();
 
 const sentence = (text, pattern) => {
@@ -69,6 +71,19 @@ const lotWarnings = (vehicle = {}) => {
 
   if (vehicle.soldBefore)
     warnings.push(`Лот уже продавался на другом аукционе (${vehicle.soldBefore}) — возможен перекуп`);
+
+  /*
+   * Неизвестный продавец не отсекает лот (правило 13.09), но помечается
+   * (решение Mikita 15.09). «No information» — площадка сама его не знает;
+   * «---» или пусто — страницу лота ещё не удалось прочитать.
+   */
+  const seller = String(vehicle.seller || "").trim();
+
+  if (!checkSeller(seller).known) {
+    warnings.push(/no\s+information/i.test(seller)
+      ? "Продавец на bid.cars не указан (No information) — страховой ли он, проверить нельзя"
+      : "Продавец ещё не проверен на странице лота — страховой ли он, неизвестно");
+  }
 
   return { warnings, biddable };
 };
