@@ -5,6 +5,7 @@ const defaultConfig = require("./config");
 const defaultHistory = require("../history/store");
 const defaultQueue = require("../photos/queue");
 const { calculateMaxBid } = require("../economics/max-bid");
+const { marketSnapshot } = require("../market/minsk-prices");
 const { fetchSearchSlice, mapSearchItem } = require("../providers/bidcars-search-api");
 const { withRun } = require("../costs/ledger");
 const { checkSeller } = require("../providers/lot-requirements");
@@ -585,6 +586,7 @@ class DailyScreener {
         saleDate: lot.saleDate || null,
         bidAtAnalysisUsd: lot.currentBid ?? null,
         marketValueUsd: market.marketValueUsd,
+        market: marketSnapshot(market),
         repairCostUsd: result.breakdown?.repairCostUsd ?? null,
         repairCostSource: result.repairCostSource || null,
         damageType: result.damageType || null,

@@ -60,12 +60,20 @@ const appendRun = (records) => {
     if (entry.screener)
       facts.screener = entry.screener;
 
+    // Объявления, из которых посчитана цена в Беларуси: пересчёт после фото их не повторяет.
+    if (entry.market)
+      facts.market = entry.market;
+
     lotFacts.set(String(entry.lotNumber), facts);
   }
 
   const added = records.map((record) => {
     const facts = lotFacts.get(String(record.lotNumber)) || {};
     const screener = record.screener || facts.screener;
+
+    // Прежние объявления годятся, только если оценка стоит на той же цене в Беларуси.
+    const market = record.market
+      || ((facts.market && facts.market.marketValueUsd === record.marketValueUsd) ? facts.market : null);
 
     return {
       runId,
@@ -74,6 +82,7 @@ const appendRun = (records) => {
       marketReference: record.marketReference || facts.marketReference || null,
       actual: facts.actual || null,
       ...(screener ? { screener } : {}),
+      ...(market ? { market } : {}),
     };
   });
 

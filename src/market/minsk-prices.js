@@ -26,7 +26,8 @@ const ANALOGS_SHOWN = 8;
 const MILEAGE_OVER_ANALOGS = 1.25;
 
 // Поднимается, когда меняются правила подбора: старые результаты кэша не годятся.
-const RULES_VERSION = 3;
+// 4 — в результате появился полный список объявлений со ссылками (15.09).
+const RULES_VERSION = 4;
 
 const USER_AGENT
   = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
@@ -391,6 +392,14 @@ class MinskMarketPrices {
     ].join("|");
   }
 
+  // Что лежит в кэше для машины, без запроса к площадкам и без учёта срока.
+  peek(vehicle) {
+    if (!vehicle || !vehicle.make || !vehicle.model || !Number.isInteger(Number(vehicle.year)))
+      return null;
+
+    return this.cache[MinskMarketPrices.cacheKey({ ...vehicle, year: Number(vehicle.year) })] || null;
+  }
+
   async lookup(vehicle) {
     const lotNumber = vehicle.lotNumber ? String(vehicle.lotNumber) : null;
     const year = Number(vehicle.year);
@@ -555,6 +564,14 @@ class MinskMarketPrices {
         .sort((a, b) => distance(a) - distance(b))
         .slice(0, ANALOGS_SHOWN)
         .map(({ vin, ...rest }) => ({ ...rest, priceUsd: Math.round(rest.priceUsd) })),
+      /*
+       * Все объявления, из которых посчитана цена, — для прогноза лота на сайте:
+       * цифру должно быть можно проверить глазами (решение Mikita 2026-09-15).
+       * В Dify не уходит: ответ /api/market/prices его вырезает.
+       */
+      listings: [...analogs]
+        .sort((a, b) => distance(a) - distance(b))
+        .map(({ vin, ...rest }) => ({ ...rest, priceUsd: Math.round(rest.priceUsd) })),
     };
 
     if (analogs.length < MIN_ANALOGS) {
@@ -586,8 +603,42 @@ class MinskMarketPrices {
   }
 }
 
+/*
+ * Снимок цены в Беларуси для записи прогноза: медиана, как подобраны
+ * аналоги и ссылки на объявления. В кэше до версии правил 4 полного
+ * списка нет — тогда берём ближайшие и помечаем complete: false.
+ */
+const marketSnapshot = (result) => {
+  if (!result || result.status !== "ok" || !result.marketValueUsd)
+    return null;
+
+  const listings = result.listings || result.closestAnalogs || [];
+
+  return {
+    fetchedAt: result.fetchedAt || null,
+    marketValueUsd: result.marketValueUsd,
+    rangeUsd: result.rangeUsd || null,
+    analogsCount: result.analogsCount ?? listings.length,
+    bySource: result.bySource || null,
+    match: result.match || null,
+    filtered: result.filtered || null,
+    complete: Array.isArray(result.listings),
+    listings: listings.map(listing => ({
+      source: listing.source,
+      url: listing.url,
+      priceUsd: Math.round(listing.priceUsd),
+      year: listing.year ?? null,
+      mileageKm: listing.mileageKm ?? null,
+      city: listing.city || null,
+      title: listing.title || null,
+      ...(listing.alsoAt?.length ? { alsoAt: listing.alsoAt } : {}),
+    })),
+  };
+};
+
 module.exports = {
   MinskMarketPrices,
+  marketSnapshot,
   KufarSource,
   OnlinerSource,
   matchByName,

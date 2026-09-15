@@ -16,7 +16,7 @@ const PhotoAssessor = require("./vision/photo-assessor");
 const photoQueue = require("./photos/queue");
 const PhotoWorker = require("./photos/worker");
 const BidWatcher = require("./photos/bid-watcher");
-const { MinskMarketPrices } = require("./market/minsk-prices");
+const { MinskMarketPrices, marketSnapshot } = require("./market/minsk-prices");
 const DailyScreener = require("./screener/screener");
 const costLedger = require("./costs/ledger");
 const { createDifyUsage, UUID } = require("./costs/dify-usage");
@@ -326,6 +326,17 @@ app.post("/api/economics/max-bid", (req, res) => {
             saleDate: listing.saleDate || null,
             bidAtAnalysisUsd: listing.currentBid ?? vehicle.currentBid ?? null,
             marketValueUsd: vehicle.marketValueUsd ?? null,
+            /*
+             * Объявления, по которым узел «ЦЕНЫ БЕЛАРУСИ» посчитал цену в этом
+             * прогоне: они лежат в кэше, заново площадки не опрашиваем.
+             */
+            // Ключ кэша — как у /api/market/prices: сначала поля из Dify, потом реестр.
+            market: marketSnapshot(marketPrices.peek({
+              make: vehicle.make ?? listing.make,
+              model: vehicle.model ?? listing.model,
+              year: vehicle.year ?? listing.year,
+              mileage: vehicle.mileage ?? listing.mileage,
+            })),
             repairCostUsd: result.breakdown?.repairCostUsd ?? null,
             repairCostSource: result.repairCostSource || null,
             damageType: result.damageType || null,
@@ -450,7 +461,8 @@ app.post("/api/market/prices", async (req, res) => {
     res.json({
       success: true,
       count: results.length,
-      results,
+      // Полный список объявлений раздувал бы промпт MARKET ANALYST: он нужен только истории.
+      results: results.map(({ listings, ...rest }) => rest),
     });
   } catch (error) {
     console.error("Market prices error:", error);
@@ -813,6 +825,10 @@ app.get("/api/history", (req, res) => {
         listing.secondaryDamage
       ),
       photoCount: photoCollector.readPhotoDir(entry.lotNumber).length,
+      // Ссылки на объявления отдаёт /api/history/market/:lot — сайт опрашивает историю раз в минуту.
+      market: entry.market
+        ? { ...entry.market, listings: undefined, listingsCount: (entry.market.listings || []).length }
+        : null,
     };
   });
 
@@ -821,6 +837,22 @@ app.get("/api/history", (req, res) => {
     count: enriched.length,
     entries: enriched.reverse(),
   });
+});
+
+/*
+ * Цена в Беларуси по последнему прогнозу лота и объявления, из которых
+ * она посчитана, со ссылками.
+ */
+app.get("/api/history/market/:lotNumber", (req, res) => {
+  const lotNumber = String(req.params.lotNumber);
+  const entry = history.readAll()
+    .filter(record => String(record.lotNumber) === lotNumber && record.market)
+    .pop();
+
+  if (!entry)
+    return res.status(404).json({ success: false, error: `У лота ${lotNumber} нет сохранённых объявлений` });
+
+  res.json({ success: true, lotNumber, estimatedAt: entry.createdAt, market: entry.market });
 });
 
 app.get("/api/history/summary", (req, res) => {

@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { MinskMarketPrices, KufarSource, OnlinerSource, matchByName } = require('../src/market/minsk-prices');
+const { MinskMarketPrices, KufarSource, OnlinerSource, matchByName, marketSnapshot } = require('../src/market/minsk-prices');
 
 const tempCache = () => path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'bronvera-market-')), 'cache.json');
 
@@ -156,4 +156,34 @@ test('a near-new lot without same-year listings is priced by older analogs and m
   assert.equal(result.match.yearTo, 2026);
   // Единственное объявление 2026 года вдвое дороже остальных и отсеивается как выброс.
   assert.equal(result.marketValueUsd, 28500);
+});
+
+test('the result keeps every analog with its link for the lot forecast, and the snapshot carries them', async () => {
+  const kufar = [
+    { title: 'Tesla Model 3', year: 2022, mileageKm: 70000, priceUsd: 22000 },
+    { title: 'Tesla Model 3', year: 2021, mileageKm: 60000, priceUsd: 21000 },
+    { title: 'Tesla Model 3', year: 2023, mileageKm: 50000, priceUsd: 25000 },
+    { title: 'Tesla Model 3', year: 2022, mileageKm: 65000, priceUsd: 23000 },
+  ];
+  const cacheFile = tempCache();
+  const prices = new MinskMarketPrices({ cacheFile, sources: [fakeSource('auto.kufar.by', kufar)] });
+  const result = await prices.lookup(lot);
+
+  assert.equal(result.listings.length, result.analogsCount);
+  assert.ok(result.listings.every(listing => listing.url && !('vin' in listing)));
+
+  const snapshot = marketSnapshot(result);
+  assert.equal(snapshot.complete, true);
+  assert.equal(snapshot.marketValueUsd, result.marketValueUsd);
+  assert.deepEqual(snapshot.listings.map(l => l.url).sort(), kufar.map(l => `https://auto.kufar.by/${l.title}`).sort());
+
+  // peek отдаёт то же из кэша, не трогая площадки.
+  const again = new MinskMarketPrices({ cacheFile, sources: [] });
+  assert.equal(again.peek(lot).marketValueUsd, result.marketValueUsd);
+
+  // Кэш старых правил: только ближайшие объявления, снимок помечен неполным.
+  const old = marketSnapshot({ status: 'ok', marketValueUsd: 20450, closestAnalogs: [{ source: 'ab.onliner.by', url: 'https://ab.onliner.by/x', priceUsd: 22900.4 }] });
+  assert.equal(old.complete, false);
+  assert.equal(old.listings[0].priceUsd, 22900);
+  assert.equal(marketSnapshot({ status: 'too_few_analogs', marketValueUsd: null }), null);
 });

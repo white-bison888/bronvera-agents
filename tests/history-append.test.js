@@ -30,3 +30,25 @@ test('a new estimate of a sold lot keeps its auction result and manual prices', 
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('a recalculation keeps the Belarus listings only while the Belarus price is the same', () => {
+  const previous = process.cwd();
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bronvera-append-market-'));
+  process.chdir(dir);
+  try {
+    delete require.cache[require.resolve('../src/history/store')];
+    const history = require('../src/history/store');
+    const market = { marketValueUsd: 20450, listings: [{ source: 'auto.kufar.by', url: 'https://auto.kufar.by/vi/1', priceUsd: 20450 }] };
+
+    history.appendRun([{ lotNumber: 'A', marketValueUsd: 20450, market }]);
+    history.appendRun([{ lotNumber: 'A', marketValueUsd: 20450, maxBidUsd: 7179 }]);
+    history.appendRun([{ lotNumber: 'A', marketValueUsd: 21000, maxBidUsd: 7300 }]);
+
+    const [, recalculated, repriced] = history.readAll();
+    assert.deepEqual(recalculated.market, market);
+    assert.equal('market' in repriced, false);
+  } finally {
+    process.chdir(previous);
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
