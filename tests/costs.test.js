@@ -52,8 +52,9 @@ test('search cost adds Dify steps, proxy traffic, photo tokens and a time share 
   assert.equal(server.costUsd, 0.002591);
   assert.match(server.detail, /доля за 4 мин 51 с из \$23,09 в месяц/);
 
-  // Тариф Vercel не проверен — в сумму не входит, но назван.
-  assert.deepEqual(report.unknown, ['Сайт на Vercel']);
+  // Бесплатный Vercel учтён нулём, неизвестных звеньев нет.
+  assert.deepEqual(report.unknown, []);
+  assert.equal(report.items.find(item => item.label.startsWith('Сайт на Vercel')).costUsd, 0);
   assert.equal(report.totalUsd, Math.round((0.0138 + 0.28861 + 0.048828 + server.costUsd) * 1e6) / 1e6);
   assert.equal(report.pendingPhotos, 2);
 });

@@ -53,6 +53,27 @@ test('a lot from a known non-insurance seller is skipped without a ceiling', () 
   assert.notEqual(calculateMaxBid(lot({ seller: '-' })).maxBidUsd, null);
 });
 
+test('lots in Hawaii, Alaska and Puerto Rico pay for the extra leg instead of being dropped', () => {
+  const forecast = { auctionEstimateMin: 3000, auctionEstimateMax: 5000 };
+  const mainland = calculateMaxBid(lot({ ...forecast, location: 'Culpeper (VA)' }));
+  const hawaii = calculateMaxBid(lot({ ...forecast, location: 'Honolulu (HI)' }));
+
+  assert.equal(mainland.breakdown.remoteLocationSurchargeUsd, 0);
+  assert.equal(mainland.assumptions.remoteLocation, null);
+  assert.equal(hawaii.breakdown.remoteLocationSurchargeUsd, 2700);
+  assert.equal(hawaii.assumptions.remoteLocation, 'HI');
+  assert.equal(calculateMaxBid(lot({ location: 'Hawaii - K... (HI)' })).assumptions.remoteLocation, 'HI');
+  assert.equal(calculateMaxBid(lot({ location: 'Anchorage (AK)' })).breakdown.remoteLocationSurchargeUsd, 3400);
+  assert.equal(calculateMaxBid(lot({ location: 'San Juan (PR)' })).breakdown.remoteLocationSurchargeUsd, 1300);
+
+  // Доставка входит в таможенную стоимость: прибыль теряет доплату вместе с пошлиной на неё.
+  assert.equal(mainland.profit.atExpectedUsd - hawaii.profit.atExpectedUsd, Math.round(2700 * 1.15));
+  // Потолок — цена лота до сбора аукциона, поэтому падает на доплату ÷ (1 + доля сбора).
+  assert.ok(Math.abs(mainland.maxBidUsd - hawaii.maxBidUsd - 2700 / 1.035) <= 1);
+  // Лот остаётся в расчёте с вердиктом, а не выбывает.
+  assert.ok(['BUY', 'WATCH', 'SKIP'].includes(hawaii.verdict));
+});
+
 test('electric cars pay the ocean surcharge for batteries', () => {
   const petrol = calculateMaxBid(lot({ fuelType: 'Gasoline' }));
   const electric = calculateMaxBid(lot({ fuelType: 'Electric' }));

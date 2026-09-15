@@ -51,6 +51,28 @@ const isElectric = vehicle => /electric|elektr|hybrid/i.test(
   String(vehicle.fuelType || "")
 );
 
+/*
+ * Штат стоянки для доплаты за вывоз: площадки пишут «Honolulu (HI)»,
+ * «Hawaii - K... (HI)», «Anchorage (AK)». Без кода штата — по названию.
+ */
+const REMOTE_BY_NAME = [
+  ["HI", /hawaii|honolulu/i],
+  ["AK", /alaska|anchorage|fairbanks/i],
+  ["PR", /puerto\s*rico|san\s*juan\s*\(pr\)/i],
+];
+
+const remoteState = (vehicle, rates) => {
+  const location = String(vehicle.location || "");
+  const code = (location.match(/\(([A-Z]{2})\)\s*$/) || [])[1];
+
+  if (code && rates.remoteLocationSurchargeUsd?.[code] !== undefined)
+    return code;
+
+  const byName = REMOTE_BY_NAME.find(([, pattern]) => pattern.test(location));
+
+  return byName && rates.remoteLocationSurchargeUsd?.[byName[0]] !== undefined ? byName[0] : null;
+};
+
 const estimateRepairFromNorms = (vehicle, rates) => {
   const damageType = classifyDamage(vehicle);
   const norm = rates.repairNorms[damageType] || rates.repairNorms.unknown;
@@ -218,7 +240,10 @@ const calculateMaxBid = (vehicle, overrides = {}) => {
   const taxes = importTaxes(vehicle, rates);
   const resaleValue = marketValue * (1 - rates.resaleDiscount);
   const evSurcharge = isElectric(vehicle) ? rates.evOceanSurchargeUsd : 0;
-  const delivery = rates.usTransportUsd + rates.oceanFreightUsd + evSurcharge + rates.portToMinskUsd;
+  const remote = remoteState(vehicle, rates);
+  const remoteSurcharge = remote ? rates.remoteLocationSurchargeUsd[remote] : 0;
+  // Доставка до границы входит в таможенную стоимость — доплата тоже облагается.
+  const delivery = rates.usTransportUsd + remoteSurcharge + rates.oceanFreightUsd + evSurcharge + rates.portToMinskUsd;
 
   // Всё, что не зависит от цены покупки и не входит в таможенную стоимость.
   const fixedCosts = repairCost + rates.bidcarsFeeUsd + rates.localCostsUsd
@@ -299,6 +324,7 @@ const calculateMaxBid = (vehicle, overrides = {}) => {
       repairCostUsd: round(repairCost),
       auctionFeesUsd: round(at.auctionFees),
       usTransportUsd: rates.usTransportUsd,
+      remoteLocationSurchargeUsd: remoteSurcharge,
       oceanFreightUsd: rates.oceanFreightUsd,
       evOceanSurchargeUsd: evSurcharge,
       portToMinskUsd: rates.portToMinskUsd,
@@ -323,6 +349,8 @@ const calculateMaxBid = (vehicle, overrides = {}) => {
       auctionFeeRate: rates.auctionFeeRate,
       auctionFeeFixed: rates.auctionFeeFixed,
       usTransportUsd: rates.usTransportUsd,
+      remoteLocation: remote,
+      remoteLocationSurchargeUsd: remoteSurcharge,
       oceanFreightUsd: rates.oceanFreightUsd,
       portToMinskUsd: rates.portToMinskUsd,
       bidcarsFeeUsd: rates.bidcarsFeeUsd,

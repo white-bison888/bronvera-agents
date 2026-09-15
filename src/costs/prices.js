@@ -75,9 +75,9 @@ module.exports = {
     },
     {
       id: "vercel",
-      label: "Сайт на Vercel",
-      usd: null,
-      source: "тариф команды «bronvera» ещё не проверен в кабинете Vercel",
+      label: "Сайт на Vercel (бесплатный тариф)",
+      usd: 0,
+      source: "Hobby, $0 — со слов Mikita 15.09.2026 («вроде не платил»); в кабинете Vercel не сверено",
     },
   ],
 };
