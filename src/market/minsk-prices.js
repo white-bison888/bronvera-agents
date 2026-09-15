@@ -26,7 +26,7 @@ const ANALOGS_SHOWN = 8;
 const MILEAGE_OVER_ANALOGS = 1.25;
 
 // Поднимается, когда меняются правила подбора: старые результаты кэша не годятся.
-const RULES_VERSION = 2;
+const RULES_VERSION = 3;
 
 const USER_AGENT
   = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
@@ -428,10 +428,10 @@ class MinskMarketPrices {
     const matchedModels = {};
     let listings = [];
 
-    // Год ±2 берём одним запросом, а сужаем уже у себя.
+    // Годы берём одним запросом (до трёх лет старше, до двух новее), а сужаем уже у себя.
     for (const source of this.sources) {
       try {
-        const found = await source.search(vehicle.make, vehicle.model, year - 2, year + 2);
+        const found = await source.search(vehicle.make, vehicle.model, year - 3, year + 2);
 
         if (found.matched)
           matchedModels[source.name] = found.label;
@@ -482,17 +482,26 @@ class MinskMarketPrices {
      */
     const mileageWindow = lotKm === null ? null : Math.max(40000, lotKm * 0.5);
 
+    /*
+     * Последний шаг — для почти новых машин, которых в Беларуси почти не
+     * продают: берём только аналоги СТАРШЕ лота, до трёх лет. Цена от этого
+     * занижена, потолок получается осторожным, и ложного BUY такая цифра
+     * не даёт; в ответе это помечено.
+     */
     const steps = [
       { level: "год ±1, похожий пробег", years: 1, mileage: true },
       { level: "год ±1, любой пробег", years: 1, mileage: false },
       { level: "год ±2, любой пробег", years: 2, mileage: false },
+      { level: "до 3 лет старше, любой пробег — цена занижена", years: 3, mileage: false, olderOnly: true },
     ].filter(step => !step.mileage || mileageWindow !== null);
 
     let chosen = null;
 
     for (const step of steps) {
       const candidates = unique.filter(l =>
-        Math.abs(l.year - year) <= step.years
+        (step.olderOnly
+          ? l.year <= year && year - l.year <= step.years
+          : Math.abs(l.year - year) <= step.years)
         && (!step.mileage
           || (l.mileageKm !== null && Math.abs(l.mileageKm - lotKm) <= mileageWindow))
       );
@@ -526,7 +535,9 @@ class MinskMarketPrices {
       match: {
         level: step.level,
         yearFrom: year - step.years,
-        yearTo: year + step.years,
+        yearTo: step.olderOnly ? year : year + step.years,
+        // Аналоги старше лота: цена занижена, потолок осторожный.
+        underestimated: Boolean(step.olderOnly),
         mileageKmFrom: step.mileage ? Math.max(0, Math.round(lotKm - mileageWindow)) : null,
         mileageKmTo: step.mileage ? Math.round(lotKm + mileageWindow) : null,
       },

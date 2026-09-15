@@ -140,3 +140,20 @@ test('a lot far above the analogs mileage gets no market price', async () => {
   assert.equal(result.marketValueUsd, null);
   assert.match(result.reason, /243 тыс\. км/);
 });
+
+test('a near-new lot without same-year listings is priced by older analogs and marked as underestimated', async () => {
+  const listings = [
+    { title: 'Tesla Model Y', year: 2026, mileageKm: 3500, priceUsd: 67500 },
+    ...[27000, 28000, 29000, 30000].map((priceUsd, i) => ({ title: `Tesla Model Y 2023 ${i}`, year: 2023, mileageKm: 40000 + i * 10000, priceUsd })),
+  ];
+  const calls = [];
+  const prices = new MinskMarketPrices({ cacheFile: tempCache(), sources: [fakeSource('auto.kufar.by', listings, calls)] });
+  const result = await prices.lookup({ lotNumber: '1-58352106', make: 'Tesla', model: 'MODEL Y', year: 2026, mileage: 2000 });
+
+  assert.equal(calls[0].yearFrom, 2023);
+  assert.equal(result.status, 'ok');
+  assert.equal(result.match.underestimated, true);
+  assert.equal(result.match.yearTo, 2026);
+  // Единственное объявление 2026 года вдвое дороже остальных и отсеивается как выброс.
+  assert.equal(result.marketValueUsd, 28500);
+});
