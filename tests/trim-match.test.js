@@ -29,3 +29,11 @@ test('no trim data, or a list cut before the wanted trim, is unknown', () => {
   assert.equal(matchTrim(lot(null), ['100D']).status, 'unknown');
   assert.equal(matchTrim(lot('60D/70D/75D/90D/...', { trimTruncated: true }), ['100D']).status, 'unknown');
 });
+
+test('a truncated trim tail is not shown to a person as a stub', () => {
+  const { trimLabels } = require('../src/providers/trim-match');
+
+  assert.deepEqual(trimLabels(lot('100D/75D/Long Ra...', { trimTruncated: true })), ['100D', '75D']);
+  assert.deepEqual(trimLabels(lot('Long Range Dual...', { trimTruncated: true })), ['Long Range']);
+  assert.deepEqual(matchTrim(lot('100D/75D/Long Ra...', { trimTruncated: true }), ['100D']).possible, ['100D', '75D']);
+});

@@ -1,4 +1,4 @@
-const { possibleTrims } = require("../providers/trim-match");
+const { trimLabels } = require("../providers/trim-match");
 
 /*
  * СЛОВАРЬ РЕЕСТРА: МАРКИ → МОДЕЛИ → КОМПЛЕКТАЦИИ
@@ -19,23 +19,6 @@ const key = value => clean(value).toLowerCase();
 
 // Из двух написаний берём человеческое: «Model 3», а не «MODEL 3».
 const nicer = (current, next) => (current && current !== current.toUpperCase() ? current : next);
-
-/*
- * bid.cars обрезает длинные названия: «Long Range Dual...». Обрезанное
- * слово выбрасываем, а начало оставляем: «Long Range». Если от названия
- * остался огрызок («Perfo», «Mid»), в словарь он не идёт — пусть модель
- * лучше не назовёт версию, чем назовёт её неверным словом.
- */
-const trimWords = (name, truncated) => {
-  const text = clean(name);
-
-  if (!truncated)
-    return text;
-
-  const cut = text.includes(" ") ? text.slice(0, text.lastIndexOf(" ")).trim() : "";
-
-  return (cut.includes(" ") || cut.length >= 5) ? cut : "";
-};
 
 // Из «Long Range», «Long Range Dual Motor» оставляем короткое: это и есть название версии.
 const shortestForms = (counts) => {
@@ -85,16 +68,12 @@ const buildVocabulary = ({ bidCars, now = Date.now(), maxTrims = 12, maxModels =
       modelEntry.model = nicer(modelEntry.model, model);
       modelEntry.lots += 1;
 
-      const { trims, truncated } = possibleTrims(car);
+      for (const name of trimLabels(car)) {
+        if (name.length < 2)
+          continue;
 
-      trims.forEach((name, index) => {
-        const value = trimWords(name, truncated && index === trims.length - 1);
-
-        if (value.length < 2)
-          return;
-
-        modelEntry.trims.set(value, (modelEntry.trims.get(value) || 0) + 1);
-      });
+        modelEntry.trims.set(name, (modelEntry.trims.get(name) || 0) + 1);
+      }
     }
   }
 

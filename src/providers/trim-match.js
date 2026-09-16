@@ -32,6 +32,26 @@ const possibleTrims = (car) => {
 };
 
 /*
+ * Для показа человеку: обрезанный хвост «Long Ra...» превращаем в «Long»
+ * или выбрасываем, если от названия остался огрызок. Сравнение при этом
+ * идёт по исходным словам — так «Long Range» находится и в обрезанном.
+ */
+const trimLabels = (car) => {
+  const { trims, truncated } = possibleTrims(car);
+
+  return trims
+    .map((name, index) => {
+      if (!truncated || index !== trims.length - 1)
+        return name;
+
+      const cut = name.includes(" ") ? name.slice(0, name.lastIndexOf(" ")).trim() : "";
+
+      return (cut.includes(" ") || cut.length >= 5) ? cut : "";
+    })
+    .filter(Boolean);
+};
+
+/*
  * confirmed — у лота одна комплектация, и это запрошенная;
  * possible  — запрошенная среди возможных;
  * unknown   — данных нет или список обрезан раньше, чем нашлась запрошенная;
@@ -42,7 +62,7 @@ const matchTrim = (car, wanted = []) => {
   const { trims, truncated } = possibleTrims(car);
 
   if (!wantedTokens.length)
-    return { status: "confirmed", possible: trims };
+    return { status: "confirmed", possible: trimLabels(car) };
 
   if (!trims.length)
     return { status: "unknown", possible: [] };
@@ -55,12 +75,12 @@ const matchTrim = (car, wanted = []) => {
     && wantedTokens.some(want => want.startsWith(tokens[tokens.length - 1]));
 
   if (found)
-    return { status: tokens.length === 1 ? "confirmed" : "possible", possible: trims };
+    return { status: tokens.length === 1 ? "confirmed" : "possible", possible: trimLabels(car) };
 
   if (cut)
-    return { status: "possible", possible: trims };
+    return { status: "possible", possible: trimLabels(car) };
 
-  return { status: truncated ? "unknown" : "mismatch", possible: trims };
+  return { status: truncated ? "unknown" : "mismatch", possible: trimLabels(car) };
 };
 
-module.exports = { matchTrim, possibleTrims };
+module.exports = { matchTrim, possibleTrims, trimLabels };
