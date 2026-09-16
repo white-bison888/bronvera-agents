@@ -5,6 +5,8 @@ const { chromium } = require("playwright");
 const { parseAuctionTiming } = require("./auction-timing");
 const { isRunAndDrive, checkSeller } = require("./lot-requirements");
 const { auctionWindow } = require("./auction-window");
+const { matchTrim } = require("./trim-match");
+const { expectedPriceUsd } = require("../screener/select");
 const { meterBrowserContext } = require("../costs/ledger");
 
 class BidCarsRateLimitError extends Error {
@@ -2126,6 +2128,33 @@ class BidCarsProvider {
       at: new Date().toISOString(),
     };
 
+    const evaluated = active.map(
+      (car) => ({
+        ...car,
+
+        saleDateConfirmed: auctionWindow(car).saleDateConfirmed,
+
+        ...this.evaluateFilters(
+          car,
+          filters
+        ),
+      })
+    );
+
+    /*
+     * Сколько лотов отсеяли комплектация и бюджет по отдельности: сайт
+     * пишет «в бюджете лотов нет» и «без данных о комплектации», только
+     * если остальное в запросе подошло.
+     */
+    const onlyFailed = (car, field) =>
+      car.mismatchFields.length === 1 && car.mismatchFields[0] === field;
+
+    this.lastFilterStats = {
+      trimUnknown: evaluated.filter(car => onlyFailed(car, "trim") && car.trimStatus === "unknown").length,
+      overBudget: evaluated.filter(car => onlyFailed(car, "price") && car.expectedPriceUsd !== null).length,
+      noForecast: evaluated.filter(car => onlyFailed(car, "price") && car.expectedPriceUsd === null).length,
+    };
+
     if (
       candidates.length > 0 &&
       eligible.length < candidates.length
@@ -2142,20 +2171,7 @@ class BidCarsProvider {
     if (active.length < eligible.length)
       console.log(`   Торги прошли, лот только в истории: скрыто ${eligible.length - active.length}`);
 
-    return active
-
-      .map(
-        (car) => ({
-          ...car,
-
-          saleDateConfirmed: auctionWindow(car).saleDateConfirmed,
-
-          ...this.evaluateFilters(
-            car,
-            filters
-          ),
-        })
-      )
+    return evaluated
 
       .filter(
         (car) =>
@@ -2376,6 +2392,25 @@ class BidCarsProvider {
       }
     }
 
+    // TRIM — лот без данных о комплектации проверить нельзя, поэтому не берём.
+
+    const trim = filters.trims.length
+      ? matchTrim(car, filters.trims)
+      : null;
+
+    if (trim && ["mismatch", "unknown"].includes(trim.status))
+      mismatch("trim");
+
+    // BUDGET — по прогнозу цены торгов BRONVERA, а не по текущей ставке.
+
+    const budget = filters.priceMin !== null || filters.priceMax !== null;
+    const expected = budget ? expectedPriceUsd(car) : null;
+
+    if (budget && expected === null)
+      mismatch("price");
+    else if (budget)
+      this.numberFilter("price", expected, filters.priceMin, filters.priceMax, unknown, mismatch);
+
     const filterStatus =
       mismatchFields.length
         ? "MISMATCH"
@@ -2387,6 +2422,8 @@ class BidCarsProvider {
       filterStatus,
       unknownFields,
       mismatchFields,
+      ...(trim ? { trimStatus: trim.status, possibleTrims: trim.possible } : {}),
+      ...(budget ? { expectedPriceUsd: expected } : {}),
     };
   }
 
@@ -2596,7 +2633,34 @@ class BidCarsProvider {
         this.arr(
           options.exteriorColors
         ),
+
+      // Комплектация и бюджет проверяются только у нас: в адресе bid.cars их нет.
+      trims:
+        this.arr(
+          options.trims
+        ),
+
+      priceMin:
+        this.num(
+          options.priceMin
+        ),
+
+      priceMax:
+        this.num(
+          options.priceMax
+        ),
     };
+  }
+
+  /*
+   * Все подходящие лоты реестра без обращения к bid.cars — для запасного
+   * списка, когда в бюджете ничего нет.
+   */
+  localMatches(options = {}) {
+    const filters = this.normalizeFilters(options);
+    const bucket = this.getBucket(this.loadCache(), this.getBucketKey(filters));
+
+    return this.filterAndRank(bucket.vehicles, filters, Number.MAX_SAFE_INTEGER);
   }
 
   // ============================================================

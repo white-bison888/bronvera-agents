@@ -21,6 +21,8 @@ const { MarketChecker } = require("./market/market-checks");
 const forecastPositions = require("./economics/forecast-positions");
 const { recalculateOpenLots } = require("./economics/recalculate");
 const { summarizeRun } = require("./searches/summary");
+const { cheapestPromising } = require("./searches/budget-fallback");
+const { buildVocabulary } = require("./searches/vocabulary");
 const DailyScreener = require("./screener/screener");
 const costLedger = require("./costs/ledger");
 const { createDifyUsage, UUID } = require("./costs/dify-usage");
@@ -171,6 +173,10 @@ app.post("/api/cars/search", async (req, res) => {
       auctionTypes = [],
       exteriorColors = [],
 
+      trims = [],
+      priceMin = null,
+      priceMax = null,
+
       maxResults = 20,
       maxPages = 2,
     } = req.body || {};
@@ -196,6 +202,10 @@ app.post("/api/cars/search", async (req, res) => {
       auctionTypes,
       exteriorColors,
 
+      trims,
+      priceMin,
+      priceMax,
+
       maxResults,
       maxPages,
     });
@@ -219,14 +229,69 @@ app.post("/api/cars/search", async (req, res) => {
       auctionTypes,
       exteriorColors,
 
+      trims,
+      priceMin,
+      priceMax,
+
       maxResults,
       maxPages,
     });
 
+    const filterStats = bidCars.lastFilterStats || {};
+    let listings = Array.isArray(result.listings) ? result.listings : [];
+    const budget = [priceMin, priceMax].some(value => value !== null && value !== "" && Number.isFinite(Number(value)))
+      ? { min: priceMin === null || priceMin === "" ? null : Number(priceMin), max: priceMax === null || priceMax === "" ? null : Number(priceMax) }
+      : null;
+
+    /*
+     * Как запрос применён к реестру — для сайта: плашка «в бюджете лотов
+     * нет», пометка «комплектация не подтверждена» у лота и сколько лотов
+     * без данных о комплектации не показано.
+     */
+    const search = {
+      trims: bidCars.arr(trims),
+      budget,
+      budgetFallback: false,
+      inBudget: budget ? listings.length : null,
+      overBudget: budget ? filterStats.overBudget || 0 : null,
+      trimUnknown: bidCars.arr(trims).length ? filterStats.trimUnknown || 0 : null,
+    };
+
+    // В бюджете пусто — 5 самых дешёвых по прогнозу, выгодных ещё до разбора фото.
+    if (budget && !listings.length) {
+      const matches = bidCars.localMatches({ ...req.body, priceMin: null, priceMax: null });
+      const fallback = await cheapestPromising({ matches, marketPrices, photoAssessor });
+
+      console.log(`   В бюджете пусто: подходящих без бюджета ${fallback.candidates}, цен проверено ${fallback.looked}, выгодных до фото ${fallback.listings.length}`);
+
+      search.matched = fallback.candidates;
+
+      if (fallback.listings.length) {
+        listings = fallback.listings;
+        search.budgetFallback = true;
+      }
+
+      result.meta = {
+        ...(result.meta || {}),
+        message: fallback.listings.length
+          ? (fallback.listings.length === 1
+            ? "В бюджете лотов нет — показан один самый дешёвый по прогнозу из выгодных до разбора фото."
+            : `В бюджете лотов нет — показаны ${fallback.listings.length} самых дешёвых по прогнозу из выгодных до разбора фото.`)
+          : fallback.candidates
+            ? `В бюджете лотов нет, а среди ${fallback.candidates} подходящих без бюджета нет выгодных до разбора фото.`
+            : (result.meta?.message || "Подходящих лотов не найдено."),
+      };
+    }
+
+    search.shown = listings.length;
+    search.trimChecks = Object.fromEntries(listings
+      .filter(listing => listing.trimStatus)
+      .map(listing => [listing.lotNumber, { status: listing.trimStatus, possible: listing.possibleTrims || [] }]));
+
     lastSearch = {
       filters: { make, models, yearFrom, yearTo, mileageMin, mileageMax,
-        fuelTypes, bodyStyles, driveTypes, transmissions, startCodes, auctionTypes },
-      found: Array.isArray(result.listings) ? result.listings.length : 0,
+        fuelTypes, bodyStyles, driveTypes, transmissions, startCodes, auctionTypes, trims, priceMin, priceMax },
+      found: listings.length,
       // Сколько лотов вообще просмотрели и сколько отсеяли обязательные
       // требования — без этих чисел короткая выдача выглядит как сбой.
       requirements: bidCars.lastRequirementStats || null,
@@ -236,17 +301,13 @@ app.post("/api/cars/search", async (req, res) => {
     res.json({
       success: true,
 
-      count: Array.isArray(result.listings)
-        ? result.listings.length
-        : 0,
+      count: listings.length,
 
       filters: result.filters || {},
 
-      meta: result.meta || {},
+      meta: { ...(result.meta || {}), search },
 
-      listings: Array.isArray(result.listings)
-        ? result.listings
-        : [],
+      listings,
     });
   } catch (error) {
     console.error("Search error:", error);
@@ -698,6 +759,15 @@ app.post("/api/photos/plan", (req, res) => {
     lots: undefined,
     query: lastSearch,
   });
+});
+
+/*
+ * Словарь реестра для уточнителя запроса в Dify: какими словами названы
+ * марки, модели и комплектации открытых лотов. Без него «Tesla 100D,
+ * P100D, Plaid» уходит в поиск как названия моделей и не находит ничего.
+ */
+app.get("/api/search/vocabulary", (req, res) => {
+  res.json({ success: true, ...buildVocabulary({ bidCars }) });
 });
 
 app.get("/api/search/last", (req, res) => {
