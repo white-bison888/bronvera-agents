@@ -2,6 +2,7 @@ const queue = require("./queue");
 const history = require("../history/store");
 const { calculateMaxBid } = require("../economics/max-bid");
 const { checkSeller } = require("../providers/lot-requirements");
+const proxyState = require("../providers/proxy-state");
 const { withRun } = require("../costs/ledger");
 const { noticeFields } = require("../providers/lot-notices");
 
@@ -92,6 +93,10 @@ class PhotoWorker {
     if (this.running)
       return;
 
+    // Прокси лежит — снимки собирать нечем, очередь ждёт.
+    if (proxyState.paused())
+      return;
+
     let item;
     try {
       item = queue.nextPending();
@@ -111,7 +116,9 @@ class PhotoWorker {
     } catch (error) {
       console.error(`   ${item.lotNumber}: ${error.message}`);
 
-      queue.markFailed(item.lotNumber, error.message);
+      // Сорвался прокси, а не лот: лот вернётся в очередь, когда связь появится.
+      if (!await proxyState.noteFailure(error, { where: "сбор фотографий" }))
+        queue.markFailed(item.lotNumber, error.message);
     } finally {
       this.running = false;
     }

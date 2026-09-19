@@ -23,6 +23,7 @@ const { recalculateOpenLots } = require("./economics/recalculate");
 const { summarizeRun } = require("./searches/summary");
 const { cheapestPromising } = require("./searches/budget-fallback");
 const { buildVocabulary } = require("./searches/vocabulary");
+const proxyState = require("./providers/proxy-state");
 const DailyScreener = require("./screener/screener");
 const costLedger = require("./costs/ledger");
 const { createDifyUsage, UUID } = require("./costs/dify-usage");
@@ -773,6 +774,26 @@ app.post("/api/photos/plan", (req, res) => {
  * марки, модели и комплектации открытых лотов. Без него «Tesla 100D,
  * P100D, Plaid» уходит в поиск как названия моделей и не находит ничего.
  */
+/*
+ * Что сейчас не работает. Пока единственное — резидентный прокси: через него
+ * идут все заходы на bid.cars (ставки, фотографии, каталог), и когда у него
+ * кончается трафик, система тихо встаёт. Сайт показывает это плашкой.
+ */
+app.get("/api/status", async (req, res) => {
+  const proxy = await proxyState.refresh();
+
+  res.json({
+    success: true,
+    proxy: {
+      ok: proxy.ok,
+      reason: proxy.reason,
+      since: proxy.since,
+      checkedAt: proxy.checkedAt,
+      paused: proxy.paused,
+    },
+  });
+});
+
 app.get("/api/search/vocabulary", (req, res) => {
   res.json({ success: true, ...buildVocabulary({ bidCars }) });
 });

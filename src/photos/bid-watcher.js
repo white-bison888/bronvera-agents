@@ -2,6 +2,7 @@ const { chromium } = require("playwright");
 const history = require("../history/store");
 const { parseAuctionTiming } = require("../providers/auction-timing");
 const { meterBrowserContext, withRun } = require("../costs/ledger");
+const proxyState = require("../providers/proxy-state");
 
 /*
  * Ставка на аукционе живёт своей жизнью: в момент анализа она может быть
@@ -112,6 +113,10 @@ class BidWatcher {
     if (this.running)
       return;
 
+    // Прокси лежит — ходить некуда: заходы всё равно сорвутся.
+    if (proxyState.paused())
+      return;
+
     const lots = this.pickLots();
 
     if (lots.length === 0)
@@ -196,6 +201,8 @@ class BidWatcher {
             ? Number(finalMatch[1].replace(/,/g, ""))
             : null;
 
+          proxyState.noteSuccess();
+
           if (Number.isFinite(finalBid)) {
             this.saveActual(item.lot, finalBid);
 
@@ -211,6 +218,9 @@ class BidWatcher {
             );
           }
         } catch (error) {
+          if (await proxyState.noteFailure(error, { where: "слежение за ставками" }))
+            break;
+
           console.log(`   ${item.lot}: ${error.message.slice(0, 60)}`);
         }
 
