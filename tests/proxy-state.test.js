@@ -64,3 +64,29 @@ test('the site is told the state, and a fresh check is not repeated', async () =
   assert.equal((await proxyState.refresh({ maxAgeMs: 60000 })).ok, false, 'свежую проверку не повторяем');
   assert.equal((await proxyState.refresh({ maxAgeMs: 0 })).ok, true, 'прокси ожил — состояние обновилось');
 });
+
+test('an outage survives a server restart', async () => {
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const path = require('node:path');
+
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bronvera-proxy-'));
+  process.env.PROXY_STATE_FILE = path.join(dir, 'proxy-state.json');
+
+  await use('HTTP/1.1 407 TRAFFIC_EXHAUSTED\r\n\r\n');
+  proxyState.noteSuccess();
+  await proxyState.refresh({ maxAgeMs: 0 });
+
+  const saved = JSON.parse(fs.readFileSync(process.env.PROXY_STATE_FILE, 'utf8'));
+  assert.equal(saved.ok, false);
+  assert.ok(saved.since);
+
+  // Перезапуск: модуль читает файл заново.
+  delete require.cache[require.resolve('../src/providers/proxy-state')];
+  const restarted = require('../src/providers/proxy-state');
+  assert.equal(restarted.status().ok, false);
+  assert.equal(restarted.status().since, saved.since);
+
+  fs.rmSync(dir, { recursive: true, force: true });
+  delete process.env.PROXY_STATE_FILE;
+})

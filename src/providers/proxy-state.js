@@ -1,4 +1,6 @@
+const fs = require("fs");
 const http = require("http");
+const path = require("path");
 
 /*
  * СОСТОЯНИЕ РЕЗИДЕНТНОГО ПРОКСИ
@@ -24,6 +26,12 @@ const PROXY_ERRORS = /ERR_PROXY_AUTH_UNSUPPORTED|ERR_PROXY_CONNECTION_FAILED|ERR
 
 const PAUSE_MS = 30 * 60 * 1000;
 
+/*
+ * Простой переживает перезапуск сервера: иначе на сайте «стоит с 20:50»
+ * вместо «с 16.09», и трёхдневная тишина выглядит десятиминутной.
+ */
+const FILE = () => process.env.PROXY_STATE_FILE || path.join(process.cwd(), "data", "proxy-state.json");
+
 const state = {
   ok: true,
   reason: null,
@@ -31,6 +39,29 @@ const state = {
   checkedAt: null,
   pausedUntil: null,
   failures: 0,
+};
+
+try {
+  const saved = JSON.parse(fs.readFileSync(FILE(), "utf8"));
+
+  if (saved && saved.ok === false) {
+    state.ok = false;
+    state.reason = saved.reason || null;
+    state.since = saved.since || null;
+  }
+} catch {
+  // Файла нет — считаем, что всё работало.
+}
+
+const remember = () => {
+  try {
+    const file = FILE();
+
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, JSON.stringify({ ok: state.ok, reason: state.reason, since: state.since, checkedAt: state.checkedAt }, null, 2), "utf8");
+  } catch {
+    // Не записалось — состояние всё равно работает, просто не переживёт перезапуск.
+  }
 };
 
 const isProxyError = error => PROXY_ERRORS.test(String(error?.message || error || ""));
@@ -117,6 +148,8 @@ const noteFailure = async (error, { where = "" } = {}) => {
   state.pausedUntil = new Date(Date.now() + PAUSE_MS).toISOString();
   state.failures += 1;
 
+  remember();
+
   if (first) {
     console.error(
       `\n⛔ bid.cars недоступен: ${probe.reason}.` +
@@ -130,7 +163,9 @@ const noteFailure = async (error, { where = "" } = {}) => {
 };
 
 const noteSuccess = () => {
-  if (!state.ok)
+  const recovered = !state.ok;
+
+  if (recovered)
     console.log("✅ bid.cars снова доступен через прокси");
 
   state.ok = true;
@@ -139,6 +174,9 @@ const noteSuccess = () => {
   state.pausedUntil = null;
   state.failures = 0;
   state.checkedAt = new Date().toISOString();
+
+  if (recovered)
+    remember();
 };
 
 // Пауза после сорвавшегося захода: пока она держится, к bid.cars не ходим.
@@ -166,6 +204,8 @@ const refresh = async ({ maxAgeMs = 5 * 60 * 1000 } = {}) => {
     state.reason = probe.reason;
     state.since = state.since || new Date().toISOString();
     state.checkedAt = new Date().toISOString();
+
+    remember();
 
     if (first)
       console.error(`⛔ bid.cars недоступен: ${probe.reason}. Ставки, фотографии и обновление реестра стоят.`);
