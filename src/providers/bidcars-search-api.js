@@ -13,6 +13,7 @@
  */
 
 const { meterBrowserContext } = require("../costs/ledger");
+const { applyLiteBrowsing } = require("./lite-browsing");
 
 const SEARCH_REQUEST_PATH = "/app/search/request";
 
@@ -198,6 +199,9 @@ const fetchSearchSlice = async (url, options = {}) => {
       extraHTTPHeaders: { "Accept-Language": "en-US,en;q=0.9" },
       ignoreHTTPSErrors: Boolean(proxy),
     });
+
+    // Список приходит готовым JSON — полсотни превью грузить незачем.
+    await applyLiteBrowsing(context);
 
     meter = meterBrowserContext(context, { source: "выдача bid.cars", viaProxy: Boolean(proxy) });
 

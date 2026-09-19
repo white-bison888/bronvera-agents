@@ -6,6 +6,7 @@ const { parseAuctionTiming } = require("./auction-timing");
 const { isRunAndDrive, checkSeller } = require("./lot-requirements");
 const { auctionWindow } = require("./auction-window");
 const { matchTrim } = require("./trim-match");
+const { applyLiteBrowsing } = require("./lite-browsing");
 const { expectedPriceUsd } = require("../screener/select");
 const { meterBrowserContext } = require("../costs/ledger");
 
@@ -1019,6 +1020,12 @@ class BidCarsProvider {
 
         ignoreHTTPSErrors: Boolean(proxy),
       });
+
+    /*
+     * Адреса снимков разбор читает из разметки, сами снимки каталогу не
+     * нужны: их грузит уже сбор фотографий, и только у отобранных лотов.
+     */
+    await applyLiteBrowsing(context);
 
     const page =
       await context.newPage();

@@ -3,6 +3,7 @@ const history = require("../history/store");
 const { parseAuctionTiming } = require("../providers/auction-timing");
 const { meterBrowserContext, withRun } = require("../costs/ledger");
 const proxyState = require("../providers/proxy-state");
+const { applyLiteBrowsing } = require("../providers/lite-browsing");
 
 /*
  * Ставка на аукционе живёт своей жизнью: в момент анализа она может быть
@@ -157,6 +158,9 @@ class BidWatcher {
       viewport: { width: 1440, height: 900 },
       ignoreHTTPSErrors: Boolean(proxy),
     });
+
+    // Нужна одна строка с текущей ставкой — снимки лота не грузим.
+    await applyLiteBrowsing(context);
 
     const page = await context.newPage();
 
