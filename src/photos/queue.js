@@ -113,6 +113,29 @@ const nextPending = (backoffBaseMs = 60000) => {
   return ready[0];
 };
 
+/*
+ * Лот, у которого торги прошли, из очереди убираем: снимки ему уже незачем,
+ * а «неудачных» записей за неделю накопилось пять — все по лотам, проданным
+ * 13–14 сентября. Возвращаем номера убранных, чтобы это было видно в логе.
+ */
+const dropFinished = (isOver) => {
+  const state = read();
+  const dropped = [];
+
+  state.items = state.items.filter((item) => {
+    if (!isOver(String(item.lotNumber)))
+      return true;
+
+    dropped.push(String(item.lotNumber));
+    return false;
+  });
+
+  if (dropped.length)
+    write(state);
+
+  return dropped;
+};
+
 const markDone = (lotNumber, photoCount) => {
   const state = read();
   const target = String(lotNumber);
@@ -212,6 +235,7 @@ module.exports = {
   QUEUE_FILE,
   enqueue,
   clear,
+  dropFinished,
   nextPending,
   markDone,
   markDeferred,

@@ -5,6 +5,7 @@ const { checkSeller } = require("../providers/lot-requirements");
 const proxyState = require("../providers/proxy-state");
 const { withRun } = require("../costs/ledger");
 const { noticeFields } = require("../providers/lot-notices");
+const { auctionWindow } = require("../providers/auction-window");
 
 /*
  * Bid.Cars закрывает доступ уже со второго лота подряд, поэтому сбор
@@ -97,6 +98,8 @@ class PhotoWorker {
     if (proxyState.paused())
       return;
 
+    this.dropFinished();
+
     let item;
     try {
       item = queue.nextPending();
@@ -121,6 +124,25 @@ class PhotoWorker {
         queue.markFailed(item.lotNumber, error.message);
     } finally {
       this.running = false;
+    }
+  }
+
+  /*
+   * Лоты с прошедшими торгами снимать незачем: они только копятся в очереди
+   * и выглядят как поломка сбора.
+   */
+  dropFinished() {
+    try {
+      const dropped = queue.dropFinished((lotNumber) => {
+        const listing = this.bidCars.findByLotNumber(lotNumber);
+
+        return Boolean(listing?.saleDate) && auctionWindow(listing).over;
+      });
+
+      if (dropped.length)
+        console.log(`   Из очереди убраны лоты с прошедшими торгами: ${dropped.join(", ")}`);
+    } catch (error) {
+      console.error(`Очередь: не удалось убрать прошедшие лоты — ${error.message}`);
     }
   }
 
