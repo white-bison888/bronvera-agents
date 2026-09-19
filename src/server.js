@@ -392,6 +392,13 @@ app.post("/api/economics/max-bid", (req, res) => {
             url: listing.url || null,
             primaryDamage: listing.primaryDamage || null,
             saleDate: listing.saleDate || null,
+            /*
+             * Диапазон Bid.Cars пишем всегда, даже когда вердикта и прогноза
+             * BRONVERA нет (ждём фото): цифра площадки известна, и на сайте
+             * у лота не должно быть пусто вместо неё.
+             */
+            auctionEstimateMin: listing.auctionEstimateMin ?? vehicle.auctionEstimateMin ?? null,
+            auctionEstimateMax: listing.auctionEstimateMax ?? vehicle.auctionEstimateMax ?? null,
             bidAtAnalysisUsd: listing.currentBid ?? vehicle.currentBid ?? null,
             marketValueUsd: vehicle.marketValueUsd ?? null,
             /*

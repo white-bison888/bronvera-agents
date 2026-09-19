@@ -44,21 +44,35 @@ const appendRun = (records) => {
    * Итог торгов и вписанные вручную цены аналогов — факты о лоте, а не
    * об отдельной оценке. Повторный анализ после торгов раньше создавал
    * запись без них, и разбор сравнивал с финалом старую оценку.
+   *
+   * Так же и с датой торгов, повреждением, адресом, характеристиками со
+   * страницы лота и прогнозом Bid.Cars: их пишут не все пересчёты, и
+   * 16.09 уточнение по фотографиям лишило лот даты торгов на сайте.
+   * Новая запись всегда важнее — переносим только то, чего в ней нет.
    */
+  const CARRIED = [
+    "actual",
+    "marketReference",
+    // Лот из утреннего отбора остаётся помеченным и после оценки через Dify.
+    "screener",
+    "saleDate",
+    "primaryDamage",
+    "url",
+    "lotDetails",
+    // Диапазон площадки: прогноз BRONVERA без снимков не считается, а он известен.
+    "auctionEstimateMin",
+    "auctionEstimateMax",
+  ];
+
   const lotFacts = new Map();
 
   for (const entry of entries) {
     const facts = lotFacts.get(String(entry.lotNumber)) || {};
 
-    if (entry.actual)
-      facts.actual = entry.actual;
-
-    if (entry.marketReference)
-      facts.marketReference = entry.marketReference;
-
-    // Лот из утреннего отбора остаётся помеченным и после оценки через Dify.
-    if (entry.screener)
-      facts.screener = entry.screener;
+    for (const field of CARRIED) {
+      if (entry[field] !== undefined && entry[field] !== null)
+        facts[field] = entry[field];
+    }
 
     // Объявления, из которых посчитана цена в Беларуси: пересчёт после фото их не повторяет.
     if (entry.market)
@@ -69,7 +83,15 @@ const appendRun = (records) => {
 
   const added = records.map((record) => {
     const facts = lotFacts.get(String(record.lotNumber)) || {};
-    const screener = record.screener || facts.screener;
+
+    const carried = {};
+
+    for (const field of CARRIED) {
+      const value = record[field] !== undefined && record[field] !== null ? record[field] : facts[field];
+
+      if (value !== undefined && value !== null)
+        carried[field] = value;
+    }
 
     // Прежние объявления годятся, только если оценка стоит на той же цене в Беларуси.
     const market = record.market
@@ -79,9 +101,10 @@ const appendRun = (records) => {
       runId,
       createdAt: runId,
       ...record,
-      marketReference: record.marketReference || facts.marketReference || null,
-      actual: facts.actual || null,
-      ...(screener ? { screener } : {}),
+      ...carried,
+      // Эти два поля сайт и разбор читают всегда — пусть будут даже пустыми.
+      marketReference: carried.marketReference || null,
+      actual: carried.actual || null,
       ...(market ? { market } : {}),
     };
   });

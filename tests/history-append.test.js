@@ -52,3 +52,40 @@ test('a recalculation keeps the Belarus listings only while the Belarus price is
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('a re-estimate keeps the sale date, the damage and the Bid.Cars range', () => {
+  const previous = process.cwd();
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bronvera-append-facts-'));
+  process.chdir(dir);
+  try {
+    delete require.cache[require.resolve('../src/history/store')];
+    const history = require('../src/history/store');
+
+    history.appendRun([{
+      lotNumber: 'A',
+      saleDate: '2026-09-17T17:00:00.000Z',
+      primaryDamage: 'Front end',
+      auctionEstimateMin: 7240,
+      auctionEstimateMax: 10760,
+      lotDetails: { seller: 'State Farm Group Insurance' },
+      decision: 'PENDING_PHOTOS',
+    }]);
+
+    // Уточнение по фотографиям пишет только то, что посчитало заново.
+    history.appendRun([{ lotNumber: 'A', maxBidUsd: 7100, decision: 'SKIP', refinedByPhotos: true }]);
+
+    const refined = history.readAll().pop();
+    assert.equal(refined.saleDate, '2026-09-17T17:00:00.000Z');
+    assert.equal(refined.primaryDamage, 'Front end');
+    assert.equal(refined.auctionEstimateMin, 7240);
+    assert.equal(refined.auctionEstimateMax, 10760);
+    assert.equal(refined.lotDetails.seller, 'State Farm Group Insurance');
+
+    // Новая дата торгов важнее прежней: площадка их переносит.
+    history.appendRun([{ lotNumber: 'A', saleDate: '2026-09-24T17:00:00.000Z', maxBidUsd: 7100 }]);
+    assert.equal(history.readAll().pop().saleDate, '2026-09-24T17:00:00.000Z');
+  } finally {
+    process.chdir(previous);
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
