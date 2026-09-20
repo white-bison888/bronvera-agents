@@ -62,18 +62,23 @@ test('an unknown seller is kept but marked: not given by bid.cars vs not read ye
 
   assert.deepEqual(lotWarnings({ seller: 'State Farm Group Insurance' }).warnings, []);
 
-  // Пометка не меняет расчёт: лот с неизвестным продавцом по-прежнему получает потолок.
+  /*
+   * С 19.09 непрочитанный продавец останавливает заключение: лот
+   * 1-64403346 (на странице лота Non-insurance Company) прошёл как
+   * «Перспективный» именно потому, что продавца не прочитали.
+   */
   const result = calculateMaxBid({
     seller: 'No information', year: 2023, marketValueUsd: 26000,
+    auctionEstimateMin: 5000, auctionEstimateMax: 8000,
     photoAssessment: { available: true, repairCostMin: 1000, repairCostMax: 2000 },
   });
-  assert.ok(Number.isFinite(result.maxBidUsd));
-  assert.match(result.warnings.at(-1), /No information/);
+  assert.equal(result.verdict, 'PENDING_SELLER');
+  assert.equal(result.maxBidUsd, null);
 });
 
 test('the deal is still calculated for a restricted lot — it is marked, not dropped', () => {
   const result = calculateMaxBid({
-    lotNumber: '0-45641447', make: 'Tesla', fuelType: 'Electric', location: 'Honolulu (HI)', year: 2021,
+    lotNumber: '0-45641447', make: 'Tesla', fuelType: 'Electric', location: 'Honolulu (HI)', year: 2021, seller: 'Geico',
     marketValueUsd: 27500, auctionEstimateMin: 2650, auctionEstimateMax: 5225,
     photoAssessment: { available: true, repairCostMin: 1300, repairCostMax: 2200 },
   });

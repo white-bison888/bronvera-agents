@@ -108,7 +108,7 @@ test('successful assessment updates history before completing task', async () =>
   queue.enqueue([{ lotNumber: '999' }]);
   history.appendRun([{ lotNumber: '999', marketValueUsd: 40000, decision: 'PENDING_PHOTOS', decisionHeld: 'WATCH' }]);
   const worker = new Worker({
-    bidCars: { findByLotNumber: () => ({ url: 'https://example.com/lot' }) },
+    bidCars: { findByLotNumber: () => ({ url: 'https://example.com/lot', seller: 'State Farm Group Insurance' }) },
     photoCollector: { collect: async () => ({ '999': ['photo.jpg'] }) },
     photoAssessor: { assess: async () => [{ available: true, repairCostMin: 1000, repairCostMax: 2000 }] },
   });

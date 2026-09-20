@@ -14,7 +14,7 @@ const { recalculateOpenLots } = require('../src/economics/recalculate');
 
 const year = new Date().getFullYear();
 const photoAssessment = { available: true, repairCostMin: 2000, repairCostMax: 4000, photosAnalyzed: 12 };
-const lot = { lotNumber: 'Y1', model: 'MODEL Y', year: year - 2, marketValueUsd: 30000, photoAssessment, auctionEstimateMin: 10000, auctionEstimateMax: 14000 };
+const lot = { lotNumber: 'Y1', model: 'MODEL Y', year: year - 2, marketValueUsd: 30000, seller: 'State Farm Group Insurance', photoAssessment, auctionEstimateMin: 10000, auctionEstimateMax: 14000 };
 
 test('an applied point moves the forecast of that model only, and undo brings the common point back', () => {
   assert.equal(calculateMaxBid(lot).forecast.expectedUsd, Math.round(10000 + 0.77 * 4000));
@@ -73,4 +73,26 @@ test('open lots of the model get a new estimate at the new point; sold and other
   assert.equal(appended[0].recalculatedFor, 'forecast-position');
   assert.equal(appended[0].lotDetails.seller, 'State Farm');
   positions.decide({ model: 'Model Y', choice: 'undo' });
+});
+
+test('a recalculation takes the last known Belarus price, not the last record', () => {
+  const now = Date.parse('2026-09-20T06:00:00Z');
+  const appended = [];
+  // Вторая запись без цены — так бывает после ручного пересчёта; лот не должен её терять.
+  const entries = [
+    { lotNumber: 'OPEN', model: 'MODEL Y', year: year - 2, marketValueUsd: 30000, decision: 'WATCH', createdAt: '2026-09-19T10:00:00Z', lotDetails: { seller: 'State Farm Group Insurance' } },
+    { lotNumber: 'OPEN', model: 'MODEL Y', year: year - 2, marketValueUsd: null, decision: 'NEEDS_MARKET_DATA', createdAt: '2026-09-19T20:00:00Z' },
+  ];
+
+  const recalculated = recalculateOpenLots({
+    model: 'Model Y',
+    now,
+    bidCars: { findByLotNumber: () => ({ lotNumber: 'OPEN', model: 'MODEL Y', year: year - 2, saleDate: '2026-09-22T14:00:00Z', auctionEstimateMin: 10000, auctionEstimateMax: 14000, seller: 'State Farm Group Insurance' }) },
+    photoAssessor: { getCached: () => photoAssessment },
+    history: { readAll: () => entries, appendRun: records => appended.push(...records) },
+  });
+
+  assert.deepEqual(recalculated, ['OPEN']);
+  assert.equal(appended[0].marketValueUsd, 30000);
+  assert.equal(appended[0].decision, 'BUY');
 });

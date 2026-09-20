@@ -4,7 +4,8 @@ const { calculateMaxBid } = require('../src/economics/max-bid');
 
 const year = new Date().getFullYear();
 const photoAssessment = { available: true, repairCostMin: 2000, repairCostMax: 4000, photosAnalyzed: 12 };
-const lot = (extra = {}) => ({ lotNumber: 'L', year: year - 2, marketValueUsd: 30000, photoAssessment, ...extra });
+// Продавец прочитан: до вердикта лот доходит только после визита на страницу лота.
+const lot = (extra = {}) => ({ lotNumber: 'L', year: year - 2, marketValueUsd: 30000, seller: 'State Farm Group Insurance', photoAssessment, ...extra });
 
 test('ceiling leaves exactly the minimum profit; expected price follows the forecast', () => {
   const result = calculateMaxBid(lot({ auctionEstimateMin: 8000, auctionEstimateMax: 12000 }));
@@ -50,7 +51,13 @@ test('a lot from a known non-insurance seller is skipped without a ceiling', () 
   assert.equal(result.maxBidUsd, null);
   assert.match(result.reason, /страховая/);
   // Неизвестный продавец расчёт не блокирует.
-  assert.notEqual(calculateMaxBid(lot({ seller: '-' })).maxBidUsd, null);
+  // Непрочитанный продавец — ожидание, а не разрешение: ни вердикта, ни потолка.
+  const unread = calculateMaxBid(lot({ seller: '-' }));
+  assert.equal(unread.verdict, 'PENDING_SELLER');
+  assert.equal(unread.maxBidUsd, null);
+  assert.match(unread.reason, /продавец не указан/);
+  // Утренний отбор — предварительная очередь: там расчёт идёт и без продавца.
+  assert.notEqual(calculateMaxBid(lot({ seller: '-' }), { requireKnownSeller: false }).maxBidUsd, null);
 });
 
 test('lots in Hawaii, Alaska and Puerto Rico pay for the extra leg instead of being dropped', () => {
@@ -79,4 +86,26 @@ test('electric cars pay the ocean surcharge for batteries', () => {
   const electric = calculateMaxBid(lot({ fuelType: 'Electric' }));
   assert.equal(electric.breakdown.evOceanSurchargeUsd, 300);
   assert.ok(electric.maxBidUsd < petrol.maxBidUsd);
+});
+
+test('a lot with photos and a price but an unread seller waits instead of becoming a candidate', () => {
+  /*
+   * Так 19.09 прошёл лот 1-64403346: снимки собраны, цена в Беларуси есть,
+   * прогноз попадает под потолок — и «Перспективный», хотя на странице лота
+   * продавец Non-insurance Company, который мы просто не дочитали.
+   */
+  const promising = calculateMaxBid(lot({ auctionEstimateMin: 4000, auctionEstimateMax: 6000 }));
+
+  assert.equal(promising.verdict, 'BUY');
+
+  for (const seller of ['No information', '---', '', undefined]) {
+    const waiting = calculateMaxBid(lot({ seller, auctionEstimateMin: 4000, auctionEstimateMax: 6000 }));
+
+    assert.equal(waiting.verdict, 'PENDING_SELLER');
+    assert.equal(waiting.maxBidUsd, null);
+    assert.equal(waiting.viable, false);
+  }
+
+  // Известный нестраховой продавец — окончательный отказ, а не ожидание.
+  assert.equal(calculateMaxBid(lot({ seller: 'Non-insurance Company', auctionEstimateMin: 4000, auctionEstimateMax: 6000 })).verdict, 'SKIP');
 });

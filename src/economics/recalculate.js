@@ -31,8 +31,18 @@ const recalculateOpenLots = ({ model, bidCars, photoAssessor, history = defaultH
     const listing = bidCars.findByLotNumber(lotNumber);
     const saleDate = listing?.saleDate || latest.saleDate;
 
+    /*
+     * Цену в Беларуси берём последнюю известную по лоту, а не из последней
+     * записи: запись могла её не содержать (пересчёт без цены, ручной
+     * запрос), и тогда лот терял и цену, и вердикт.
+     */
+    const marketValueUsd = entries
+      .map(entry => entry.marketValueUsd)
+      .filter(value => Number.isFinite(value))
+      .pop();
+
     // Без реестра нет прогноза Bid.Cars, без цены в Беларуси нечего пересчитывать.
-    if (!listing || !Number.isFinite(latest.marketValueUsd) || !saleDate || Date.parse(saleDate) <= now)
+    if (!listing || !Number.isFinite(marketValueUsd) || !saleDate || Date.parse(saleDate) <= now)
       continue;
 
     const sellers = [listing.seller, ...entries.map(entry => entry.lotDetails?.seller).reverse()];
@@ -45,7 +55,7 @@ const recalculateOpenLots = ({ model, bidCars, photoAssessor, history = defaultH
       lotNumber,
       ...noticeFields(lotDetails),
       ...(seller ? { seller } : {}),
-      marketValueUsd: latest.marketValueUsd,
+      marketValueUsd,
       ...(photoAssessment ? { photoAssessment } : {}),
     });
 
@@ -59,7 +69,7 @@ const recalculateOpenLots = ({ model, bidCars, photoAssessor, history = defaultH
       primaryDamage: latest.primaryDamage || null,
       saleDate,
       bidAtAnalysisUsd: listing.currentBid ?? null,
-      marketValueUsd: latest.marketValueUsd,
+      marketValueUsd,
       repairCostUsd: result.breakdown?.repairCostUsd ?? null,
       repairCostSource: result.repairCostSource || null,
       damageType: result.damageType || null,

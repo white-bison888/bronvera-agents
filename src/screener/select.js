@@ -115,7 +115,8 @@ const evaluateLot = (lot, { market, photoAssessment = null, rates = {} }) => {
       marketValueUsd: market.marketValueUsd,
       ...(photoAssessment ? { photoAssessment } : {}),
     },
-    { ...rates, requirePhotoAssessment: false }
+    // Отбор дня — предварительная очередь, а не заключение: продавца там ещё не читали.
+    { ...rates, requirePhotoAssessment: false, requireKnownSeller: false }
   );
 
   if (!result.profit || !result.breakdown)

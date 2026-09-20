@@ -228,6 +228,24 @@ const calculateDeal = (vehicle, overrides = {}) => {
     };
   }
 
+  /*
+   * Продавец не прочитан — это «неизвестно», а не «разрешено». Проверяем
+   * после фотографий и цены: пока их нет, лот и так ждёт, а вот лот
+   * со снимками и ценой раньше выходил «Перспективным» с непрочитанным
+   * продавцом — так 19.09 прошёл 1-64403346, у которого на странице лота
+   * стоит Non-insurance Company.
+   */
+  if (rates.requireKnownSeller !== false && !seller.known) {
+    return {
+      lotNumber: vehicle.lotNumber || null,
+      maxBidUsd: null,
+      viable: false,
+      verdict: "PENDING_SELLER",
+      photoStatus: hasPhotoAssessment(photo) ? "ok" : "skipped",
+      reason: `${seller.reason} — заключение не выдаётся, пока страница лота не покажет, страховая ли компания`,
+    };
+  }
+
   // Оценка по фотографиям точнее текстовой: там видны силовые элементы
   // и реальная глубина удара, поэтому она имеет приоритет.
   let repairCost = photo
