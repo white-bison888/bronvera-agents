@@ -178,8 +178,19 @@ class PhotoWorker {
 
     const details = (this.photoCollector.takeDetails?.() || {})[String(lotNumber)];
 
+    /*
+     * Две разные причины, почему продавца нет, и различать их важно: если
+     * страницу прочитали, а в строке Seller стоит «No information», площадка
+     * его не публикует и ждать нечего; если страницу прочитать не удалось
+     * (403), стоит зайти ещё раз. Проверка 20.09 по трём лотам показала, что
+     * площадка публикует их все — значит, дело было в чтении.
+     */
+    const sellerPublished = details
+      ? !/^no\s+information$/i.test(String(details.seller || "").trim())
+      : null;
+
     if (details)
-      this.saveDetails(lotNumber, details);
+      this.saveDetails(lotNumber, { ...details, sellerPublished });
 
     /*
      * Продавца видно только на странице лота, поэтому требование проверяется
@@ -197,8 +208,16 @@ class PhotoWorker {
       return;
     }
 
-    if (!sellerCheck.known)
-      console.log(`   ${lotNumber}: продавец не прочитан, оцениваем без проверки`);
+    if (!sellerCheck.known) {
+      console.log(
+        `   ${lotNumber}: ` +
+        (details === undefined
+          ? "страницу лота прочитать не удалось — продавец неизвестен"
+          : sellerPublished
+            ? "продавец на странице не найден — разметка могла измениться"
+            : "площадка не публикует продавца этого лота")
+      );
+    }
 
     const files = photos[String(lotNumber)] || [];
 
