@@ -243,6 +243,23 @@ class PhotoWorker {
 
     // Удаляем задачу только после успешной оценки и сохранения истории.
     this.refreshHistory(lotNumber, assessment);
+
+    /*
+     * Снимки есть, а продавца страница так и не дала — задача не сделана:
+     * без продавца заключения не будет (правило 20.09). Оставляем в очереди
+     * на новую попытку, оценку при этом сохранили — она уже в кэше.
+     */
+    if (!sellerCheck.known) {
+      queue.markFailed(lotNumber, "Продавец не прочитан на странице лота");
+
+      console.log(
+        `   ${lotNumber}: ${files.length} фото, оценка ${assessment?.severity || "нет"}; ` +
+        "продавца страница не дала — вернёмся за ним"
+      );
+
+      return;
+    }
+
     queue.markDone(lotNumber, files.length);
 
     console.log(

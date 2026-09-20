@@ -15,7 +15,7 @@ test('failed assessment survives restart and succeeds on retry', async () => {
   queue.enqueue([{ lotNumber: '123' }]);
   let assessment = { available: false, reason: 'Temporary API failure' };
   const dependencies = {
-    bidCars: { findByLotNumber: () => ({ url: 'https://example.com/lot' }) },
+    bidCars: { findByLotNumber: () => ({ url: 'https://example.com/lot', seller: 'State Farm Group Insurance' }) },
     photoCollector: { collect: async () => ({ '123': ['photo.jpg'] }) },
     photoAssessor: { assess: async () => [assessment] },
   };
@@ -40,7 +40,7 @@ test('history write failure retains task for retry', async () => {
   queue.clear();
   queue.enqueue([{ lotNumber: '123' }]);
   const worker = new Worker({
-    bidCars: { findByLotNumber: () => ({ url: 'https://example.com/lot' }) },
+    bidCars: { findByLotNumber: () => ({ url: 'https://example.com/lot', seller: 'State Farm Group Insurance' }) },
     photoCollector: { collect: async () => ({ '123': ['photo.jpg'] }) },
     photoAssessor: { assess: async () => [{ available: true, repairCostMax: 2000 }] },
   });
@@ -176,3 +176,28 @@ test('with photos already on disk an unknown seller still sends the collector to
   }).tick();
   assert.deepEqual(known, [{ refill: false }]);
 });
+
+test('photos without a seller do not finish the task: the collector comes back for the seller', async () => {
+  queue.clear();
+
+  const worker = new Worker({
+    bidCars: { findByLotNumber: () => ({ url: 'https://example.com/lot', seller: '---' }) },
+    photoCollector: {
+      collect: async () => ({ '1-777': ['photo.jpg'] }),
+      // Страница отдала снимки, но продавца не показала.
+      takeDetails: () => ({ '1-777': { keyPresence: 'Present' } }),
+    },
+    photoAssessor: { assess: async () => [{ available: true, repairCostMin: 1000, repairCostMax: 2000, severity: 'moderate' }] },
+  });
+
+  queue.enqueue([{ lotNumber: '1-777' }], 'run-seller');
+  await worker.tick();
+
+  const item = queue.read().items.find(entry => entry.lotNumber === '1-777');
+
+  assert.ok(item, 'лот остался в очереди');
+  assert.equal(item.attempts, 1);
+  assert.match(item.lastError, /Продавец не прочитан/);
+
+  // Разбор снимков при этом не повторится: он уже в кэше оценок.
+})
