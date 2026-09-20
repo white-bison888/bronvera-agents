@@ -369,7 +369,13 @@ class PhotoWorker {
 
     const latest = entries[entries.length - 1];
 
-    if (latest.repairCostSource === "photo")
+    /*
+     * Разбор снимков уже учтён — второй раз пересчитывать нечего. Кроме
+     * одного случая: лот ждал продавца, а этим заходом его прочитали —
+     * тогда пересчёт как раз и нужен, иначе вердикт навсегда остаётся
+     * «Ждём продавца» (так 20.09 застрял 1-63480016).
+     */
+    if (latest.repairCostSource === "photo" && latest.decision !== "PENDING_SELLER")
       return;
 
     const listing = this.bidCars.findByLotNumber(lotNumber) || {};

@@ -201,3 +201,33 @@ test('photos without a seller do not finish the task: the collector comes back f
 
   // Разбор снимков при этом не повторится: он уже в кэше оценок.
 })
+
+test('a lot waiting for its seller is recalculated once the page gives one', async () => {
+  const history = require('../src/history/store');
+
+  queue.clear();
+
+  const worker = new Worker({
+    bidCars: { findByLotNumber: () => ({ url: 'https://example.com/lot', seller: 'Geico', auctionEstimateMin: 4000, auctionEstimateMax: 6000 }) },
+    photoCollector: {
+      collect: async () => ({ '1-888': ['photo.jpg'] }),
+      takeDetails: () => ({ '1-888': { seller: 'Geico' } }),
+    },
+    photoAssessor: { assess: async () => [{ available: true, repairCostMin: 1000, repairCostMax: 2000, severity: 'moderate' }] },
+  });
+
+  // Так лот и выглядел: разбор снимков уже был, а вердикт ждал продавца.
+  history.appendRun([{
+    lotNumber: '1-888', model: 'MODEL Y', year: new Date().getFullYear() - 2,
+    marketValueUsd: 30000, repairCostSource: 'photo', decision: 'PENDING_SELLER', maxBidUsd: null,
+  }]);
+
+  queue.enqueue([{ lotNumber: '1-888' }], 'run-seller-2');
+  await worker.tick();
+
+  const latest = history.readAll().filter(entry => String(entry.lotNumber) === '1-888').pop();
+
+  assert.notEqual(latest.decision, 'PENDING_SELLER');
+  assert.ok(Number.isFinite(latest.maxBidUsd));
+  assert.equal(queue.read().items.some(item => item.lotNumber === '1-888'), false);
+})
