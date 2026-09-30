@@ -89,8 +89,14 @@ class DailyScreener {
     }
   }
 
+  // Без pilotUntil отбор идёт бессрочно; с датой — по неё включительно.
   isPilotDay(day) {
-    return day >= this.config.pilotFrom && day <= this.config.pilotUntil;
+    return day >= this.config.pilotFrom
+      && (!this.config.pilotUntil || day <= this.config.pilotUntil);
+  }
+
+  pilotOver(day) {
+    return Boolean(this.config.pilotUntil) && day > this.config.pilotUntil;
   }
 
   /*
@@ -130,20 +136,21 @@ class DailyScreener {
 
     const day = minskDay(new Date());
 
-    if (day > this.config.pilotUntil) {
-      this.log(`🗓️ Пилот ежедневного отбора завершён ${this.config.pilotUntil}, расписание не запускается`);
+    if (this.pilotOver(day)) {
+      this.log(`🗓️ Отбор ограничен по ${this.config.pilotUntil}, расписание не запускается`);
       return;
     }
 
     this.log(
-      `🗓️ Ежедневный отбор: пилот ${this.config.pilotFrom}…${this.config.pilotUntil}, ` +
-      `скан после ${this.config.runAtMinskHour}:00 по Минску`
+      "🗓️ Ежедневный отбор: " +
+      (this.config.pilotUntil ? `окно ${this.config.pilotFrom}…${this.config.pilotUntil}` : "бессрочно") +
+      `, скан после ${this.config.runAtMinskHour}:00 по Минску`
     );
 
     const check = () => {
-      if (minskDay(new Date()) > this.config.pilotUntil) {
+      if (this.pilotOver(minskDay(new Date()))) {
         this.stop();
-        this.log("🗓️ Пилот ежедневного отбора завершён — расписание остановлено");
+        this.log("🗓️ Отбор дошёл до конца окна — расписание остановлено");
         return;
       }
 

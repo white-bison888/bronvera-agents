@@ -198,13 +198,15 @@ test('daily run scans slices with retries, writes the day file, history and phot
   assert.equal(live.tiers[0].candidates[0].now.photoQueue.status, 'pending');
 });
 
-test('schedule runs only on pilot days after 7:00 Minsk and retries a failed scan at most three times', () => {
+test('schedule runs every day after 7:00 Minsk and retries a failed scan at most three times', () => {
   const screener = new DailyScreener({ bidCars: {}, marketPrices: {}, config, dataDir: path.join(temp, 'schedule'), log: () => {} });
   const at = iso => new Date(iso);
 
   assert.equal(screener.shouldRun(at('2026-09-17T03:30:00Z')), false); // 06:30 Минск
   assert.equal(screener.shouldRun(at('2026-09-17T04:05:00Z')), true);
-  assert.equal(screener.shouldRun(at('2026-09-19T05:00:00Z')), false); // пилот окончен
+  // Пилот кончился 18.09, но конца у расписания больше нет — отбор идёт дальше.
+  assert.equal(screener.shouldRun(at('2026-09-19T05:00:00Z')), true);
+  assert.equal(screener.shouldRun(at('2027-03-01T05:00:00Z')), true);
   assert.equal(screener.shouldRun(at('2026-09-14T05:00:00Z')), false);
 
   screener.writeDay('2026-09-17', { status: 'failed', attempts: 1, startedAt: '2026-09-17T04:05:00Z' });
@@ -216,4 +218,16 @@ test('schedule runs only on pilot days after 7:00 Minsk and retries a failed sca
 
   screener.writeDay('2026-09-17', { status: 'done', attempts: 1, startedAt: '2026-09-17T04:05:00Z' });
   assert.equal(screener.shouldRun(at('2026-09-17T09:00:00Z')), false);
+});
+
+test('a screening window still closes when pilotUntil is set', () => {
+  const windowed = { ...config, pilotUntil: '2026-09-18' };
+  const screener = new DailyScreener({ bidCars: {}, marketPrices: {}, config: windowed, dataDir: path.join(temp, 'window'), log: () => {} });
+  const at = iso => new Date(iso);
+
+  assert.equal(screener.shouldRun(at('2026-09-17T04:05:00Z')), true);
+  assert.equal(screener.shouldRun(at('2026-09-18T04:05:00Z')), true);  // последний день включительно
+  assert.equal(screener.shouldRun(at('2026-09-19T05:00:00Z')), false); // окно закрылось
+  assert.equal(screener.pilotOver('2026-09-19'), true);
+  assert.equal(screener.pilotOver('2026-09-18'), false);
 });
