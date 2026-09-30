@@ -910,12 +910,28 @@ app.get("/api/history", (req, res) => {
     : entries;
 
   /*
+   * bidCars.findByLotNumber() раньше вызывался на каждую запись истории и
+   * каждый раз заново читал и парсил файл кэша bid.cars с диска — на 367+
+   * записях это и давало ~5с на один запрос (точный замер 30.09.2026).
+   * Кэш читаем один раз за запрос и складываем в карту lotNumber -> лот.
+   */
+  const bidCarsCache = bidCars.loadCache();
+  const bidCarsByLotNumber = new Map();
+  for (const bucket of Object.values(bidCarsCache.buckets || {})) {
+    for (const vehicle of bucket.vehicles || []) {
+      const key = String(vehicle.lotNumber);
+      if (!bidCarsByLotNumber.has(key))
+        bidCarsByLotNumber.set(key, vehicle);
+    }
+  }
+
+  /*
    * Дата торгов и ставка меняются после того, как запись создана:
    * ставка растёт до закрытия, дату мы научились разбирать позже.
    * Поэтому берём их из реестра, а не из момента анализа.
    */
   const enriched = filtered.map((entry) => {
-    const listing = bidCars.findByLotNumber(entry.lotNumber) || {};
+    const listing = bidCarsByLotNumber.get(String(entry.lotNumber)) || {};
 
     return {
       ...entry,
