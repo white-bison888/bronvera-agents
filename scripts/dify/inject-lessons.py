@@ -50,6 +50,11 @@ def lesson_text(filename):
     # убираем служебный комментарий и заголовок файла — модели нужен только смысл
     body = re.sub(r"<!--.*?-->", "", body, flags=re.S)
     body = re.sub(r"^#\s+.*$", "", body, flags=re.M)
+    # Строку «Снято <дата> по N парам из M записей» в промпт не несём: дата
+    # меняется ежедневно, и блок выглядел бы новым каждый день — таймер
+    # публиковал бы граф впустую. Сколько лотов за уроком, сказано в самих
+    # пунктах («122 лотов»), а дата остаётся в файле для человека.
+    body = re.sub(r"^Снято .*?записей истории\.\s*$", "", body, flags=re.M | re.S)
     body = body.strip()
     if not body:
         return None
@@ -96,11 +101,19 @@ for node in graph["nodes"]:
     # уроки идут в первое сообщение — это системная часть промпта
     first = prompts[0]
     before = first.get("text") or ""
-    had = BEGIN in before
+    was = re.search(re.escape(BEGIN) + r".*?" + re.escape(END), before, flags=re.S)
+    same = bool(was) and was.group(0) == block
+
     first["text"] = strip_block(before) + "\n\n" + block
     data["prompt_template"] = prompts
 
-    touched.append((title, len(lesson), "обновлён" if had else "добавлен"))
+    if was is None:
+        what = "добавлен"
+    elif same:
+        what = "не изменился"
+    else:
+        what = "обновлён"
+    touched.append((title, len(lesson), what))
 
 if not touched:
     raise SystemExit("ни в один узел уроки не попали — проверь папку с уроками и названия узлов")
@@ -112,3 +125,11 @@ for title, size, what in touched:
     print(f"{title:<{width}}  блок {what}, {size} символов (≈{size // 4} токенов входа)")
 print(f"\nузлов затронуто: {len(touched)} | всего узлов: {len(graph['nodes'])} | рёбер: {len(graph['edges'])}")
 print(f"записано: {target}")
+
+# Сравнивать графы побайтно нельзя: мы снимаем блок и дописываем его в конец,
+# из-за чего порядок блоков в промпте может измениться при том же тексте.
+# Поэтому о «ничего не поменялось» сообщаем кодом возврата 2 — на него смотрит
+# refresh-lessons.sh, чтобы не публиковать граф впустую.
+if all(what == "не изменился" for _, _, what in touched):
+    print("\nуроки те же, что уже вшиты")
+    sys.exit(2)

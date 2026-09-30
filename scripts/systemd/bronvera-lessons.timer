@@ -1,0 +1,12 @@
+[Unit]
+Description=BRONVERA: обновлять уроки агентов раз в неделю
+
+[Timer]
+# История пополняется медленно: за день прибавляется десяток-два записей,
+# а пар «прогноз против факта» — единицы. Раз в неделю достаточно.
+OnCalendar=Mon 04:00
+Persistent=true
+RandomizedDelaySec=10m
+
+[Install]
+WantedBy=timers.target

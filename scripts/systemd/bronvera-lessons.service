@@ -1,0 +1,14 @@
+[Unit]
+Description=BRONVERA: пересчёт уроков из истории прогнозов и публикация в Dify
+Documentation=file:///opt/bronvera-agents/scripts/dify/refresh-lessons.sh
+After=docker.service bronvera-api.service
+Wants=docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/bronvera-agents
+ExecStart=/usr/bin/env bash /opt/bronvera-agents/scripts/dify/refresh-lessons.sh
+# Скрипт сам откатывает публикацию, если прогон после неё не проходит,
+# поэтому падение — это сигнал посмотреть журнал, а не чинить граф руками.
+StandardOutput=journal
+StandardError=journal
