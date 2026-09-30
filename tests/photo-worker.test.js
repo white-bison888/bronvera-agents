@@ -202,6 +202,31 @@ test('photos without a seller do not finish the task: the collector comes back f
   // Разбор снимков при этом не повторится: он уже в кэше оценок.
 })
 
+test('a seller the site refuses to publish closes the task instead of burning retries', async () => {
+  queue.clear();
+
+  const worker = new Worker({
+    bidCars: { findByLotNumber: () => ({ url: 'https://example.com/lot', seller: '---' }) },
+    photoCollector: {
+      collect: async () => ({ '1-999': ['photo.jpg'] }),
+      // Страницу прочитали, и в строке Seller стоит «No information»:
+      // площадка продавца не публикует, повторные заходы ничего не дадут.
+      takeDetails: () => ({ '1-999': { seller: 'No information' } }),
+    },
+    photoAssessor: { assess: async () => [{ available: true, repairCostMin: 1000, repairCostMax: 2000, severity: 'moderate' }] },
+  });
+
+  queue.enqueue([{ lotNumber: '1-999' }], 'run-seller-3');
+  await worker.tick();
+
+  assert.equal(
+    queue.read().items.find(entry => entry.lotNumber === '1-999'),
+    undefined,
+    'задача закрыта, а не оставлена на повтор'
+  );
+  assert.equal(queue.stats().failed, 0);
+})
+
 test('a lot waiting for its seller is recalculated once the page gives one', async () => {
   const history = require('../src/history/store');
 
