@@ -25,6 +25,7 @@ const { cheapestPromising } = require("./searches/budget-fallback");
 const { buildVocabulary } = require("./searches/vocabulary");
 const proxyState = require("./providers/proxy-state");
 const DailyScreener = require("./screener/screener");
+const BatScraper = require("./rare/bat-scraper");
 const costLedger = require("./costs/ledger");
 const { createDifyUsage, UUID } = require("./costs/dify-usage");
 const { buildPeriodSummary, buildRunCost, minskDay, periodBounds } = require("./costs/report");
@@ -70,6 +71,9 @@ const screener = new DailyScreener({
   photoAssessor,
   photoCollector,
 });
+
+// BRONVERA Rare, Фаза 1 — первая реальная площадка. См. work-plan.md.
+const rareScraper = new BatScraper();
 
 /*
  * Последний поиск помним, чтобы интерфейс мог показать покрытие
@@ -977,6 +981,16 @@ app.get("/api/history/market/:lotNumber", (req, res) => {
   res.json({ success: true, lotNumber, estimatedAt: entry?.createdAt || null, market: entry?.market || null, checks });
 });
 
+/*
+ * BRONVERA Rare, Фаза 1 — лоты с Bring a Trailer, обновляются раз в сутки
+ * фоновым BatScraper. Отдаём как есть, без пересчёта на каждый запрос —
+ * это и есть тот самый «индекс, разобранный один раз», а не на каждый
+ * заход (см. aggregator-approach.md).
+ */
+app.get("/api/rare/lots", (req, res) => {
+  res.json({ success: true, ...rareScraper.readLots() });
+});
+
 // Сверки цены в Беларуси по всем лотам — цифры без объявлений.
 app.get("/api/market/checks", (req, res) => {
   res.json({ success: true, lots: marketChecker.summary() });
@@ -1234,4 +1248,5 @@ app.listen(PORT, () => {
   bidWatcher.start();
   screener.start();
   marketChecker.start();
+  rareScraper.start();
 });
