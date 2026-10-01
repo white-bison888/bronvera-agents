@@ -31,6 +31,7 @@ const RmSothebysScraper = require("./rare/rmsothebys-scraper");
 const CarsAndBidsScraper = require("./rare/carsandbids-scraper");
 const HemmingsScraper = require("./rare/hemmings-scraper");
 const RareAlerts = require("./rare/alerts");
+const { buildRareCostSummary } = require("./rare/cost-report");
 const costLedger = require("./costs/ledger");
 const { createDifyUsage, UUID } = require("./costs/dify-usage");
 const { buildPeriodSummary, buildRunCost, minskDay, periodBounds } = require("./costs/report");
@@ -1024,6 +1025,11 @@ app.get("/api/rare/lots", (req, res) => {
  */
 app.get("/api/rare/sources/status", (req, res) => {
   res.json({ success: true, sources: rareSources.map(({ id, scraper }) => ({ id, ...scraper.readStatus() })) });
+});
+
+// Сколько стоит обход площадок Rare — резидентный прокси для тех, что за Cloudflare, остальные бесплатны (01.10.2026).
+app.get("/api/rare/costs/summary", (req, res) => {
+  res.json({ success: true, ...buildRareCostSummary({ sourceIds: rareSources.map(({ id }) => id) }) });
 });
 
 /*
