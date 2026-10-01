@@ -84,6 +84,7 @@ class RareAlerts {
       id: `w${Date.now()}${Math.floor(Math.random() * 1000)}`,
       keyword: trimmed,
       budgetMax: Number.isFinite(Number(budgetMax)) && budgetMax !== null && budgetMax !== "" ? Number(budgetMax) : null,
+      enabled: true,
       createdAt: new Date().toISOString(),
     };
     list.push(item);
@@ -95,6 +96,32 @@ class RareAlerts {
     const list = this.readWatchlist().filter(item => item.id !== id);
     this.writeWatchlist(list);
     return list;
+  }
+
+  /*
+   * Редактирование на месте (слова, бюджет) и переключатель включено/
+   * выключено — решение Mikita 01.10.2026: критерий на паузе не теряется,
+   * просто не проверяется в checkAfterRun, пока снова не включат.
+   */
+  updateWatchlistItem(id, { keyword, budgetMax, enabled } = {}) {
+    const list = this.readWatchlist();
+    const item = list.find(entry => entry.id === id);
+    if (!item)
+      throw new Error("Критерий не найден — возможно, уже удалён");
+
+    if (keyword !== undefined) {
+      const trimmed = String(keyword).trim();
+      if (!trimmed)
+        throw new Error("Пустой запрос — нечего искать");
+      item.keyword = trimmed;
+    }
+    if (budgetMax !== undefined)
+      item.budgetMax = Number.isFinite(Number(budgetMax)) && budgetMax !== null && budgetMax !== "" ? Number(budgetMax) : null;
+    if (enabled !== undefined)
+      item.enabled = Boolean(enabled);
+
+    this.writeWatchlist(list);
+    return item;
   }
 
   readWatchedLots() {
@@ -146,6 +173,9 @@ class RareAlerts {
 
     for (const lot of newLots) {
       for (const criterion of watchlist) {
+        // enabled !== false — старые записи без этого поля (до 01.10.2026) считаются включёнными.
+        if (criterion.enabled === false)
+          continue;
         if (!this.matchesKeyword(lot, criterion.keyword))
           continue;
         if (criterion.budgetMax !== null && lot.currentBid !== null && lot.currentBid > criterion.budgetMax)

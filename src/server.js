@@ -1030,6 +1030,17 @@ app.delete("/api/rare/watchlist/:id", (req, res) => {
   res.json({ success: true, items });
 });
 
+// Правка на месте (слова, бюджет) и переключатель включено/выключено — вкладка «Мои алерты».
+app.patch("/api/rare/watchlist/:id", (req, res) => {
+  try {
+    const item = rareAlerts.updateWatchlistItem(req.params.id, req.body || {});
+    res.json({ success: true, item });
+  }
+  catch (error) {
+    res.status(400).json({ success: false, error: error.message });
+  }
+});
+
 // Кнопка «Следить за лотом»: какие лоты сейчас отслеживаются (для состояния кнопки при загрузке).
 app.get("/api/rare/watch", (req, res) => {
   res.json({ success: true, lotIds: Object.keys(rareAlerts.readWatchedLots()) });

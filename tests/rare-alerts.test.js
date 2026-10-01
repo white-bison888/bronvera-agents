@@ -47,6 +47,40 @@ test("addWatchlistItem refuses an empty keyword", () => {
   assert.throws(() => alerts.addWatchlistItem({ keyword: "   " }));
 });
 
+test("a new item starts enabled", () => {
+  const alerts = new RareAlerts({ dataDir: tmpDir() });
+  const item = alerts.addWatchlistItem({ keyword: "m3" });
+  assert.equal(item.enabled, true);
+});
+
+test("updateWatchlistItem edits keyword and budget, and toggles enabled, in place", () => {
+  const dataDir = tmpDir();
+  const alerts = new RareAlerts({ dataDir });
+  const item = alerts.addWatchlistItem({ keyword: "e30 m3", budgetMax: 30000 });
+
+  const updated = alerts.updateWatchlistItem(item.id, { keyword: "e36 m3", budgetMax: 40000 });
+  assert.equal(updated.keyword, "e36 m3");
+  assert.equal(updated.budgetMax, 40000);
+  assert.equal(alerts.readWatchlist().length, 1); // правка, не новая запись
+
+  const disabled = alerts.updateWatchlistItem(item.id, { enabled: false });
+  assert.equal(disabled.enabled, false);
+  assert.equal(disabled.keyword, "e36 m3"); // остальное не тронуто
+
+  fs.rmSync(dataDir, { recursive: true, force: true });
+});
+
+test("updateWatchlistItem refuses an unknown id and an empty keyword", () => {
+  const dataDir = tmpDir();
+  const alerts = new RareAlerts({ dataDir });
+  assert.throws(() => alerts.updateWatchlistItem("missing", { enabled: false }));
+
+  const item = alerts.addWatchlistItem({ keyword: "m3" });
+  assert.throws(() => alerts.updateWatchlistItem(item.id, { keyword: "   " }));
+
+  fs.rmSync(dataDir, { recursive: true, force: true });
+});
+
 test("setLotWatch adds and removes a lot, seeding known bid/status", () => {
   const dataDir = tmpDir();
   const alerts = new RareAlerts({ dataDir });
@@ -92,6 +126,21 @@ test("checkAfterRun skips a match over budget", async () => {
   const expensive = lot({ id: "bat-new", currentBid: 50000 });
 
   await alerts.checkAfterRun({ newLots: [expensive], allLotsById: new Map([["bat-new", expensive]]) });
+
+  assert.equal(sent.length, 0);
+
+  fs.rmSync(dataDir, { recursive: true, force: true });
+});
+
+test("checkAfterRun skips a criterion that was paused via updateWatchlistItem", async () => {
+  const dataDir = tmpDir();
+  const sent = [];
+  const alerts = new RareAlerts({ dataDir, send: async (text) => { sent.push(text); return true; } });
+  const item = alerts.addWatchlistItem({ keyword: "m3" });
+  alerts.updateWatchlistItem(item.id, { enabled: false });
+
+  const newLot = lot({ id: "bat-new" });
+  await alerts.checkAfterRun({ newLots: [newLot], allLotsById: new Map([["bat-new", newLot]]) });
 
   assert.equal(sent.length, 0);
 
