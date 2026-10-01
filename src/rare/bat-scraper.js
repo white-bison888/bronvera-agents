@@ -59,6 +59,17 @@ const guessMake = (title) => {
   return rest.split(/\s+/)[0] || "";
 };
 
+// Заголовки у BaT приходят как HTML: "4&#215;4" вместо "4×4", "&amp;" вместо "&".
+const HTML_ENTITIES = { amp: "&", quot: "\"", "#039": "'", apos: "'", lt: "<", gt: ">", nbsp: " " };
+const decodeHtmlEntities = (text) =>
+  text.replace(/&(#\d+|#x[0-9a-f]+|[a-z]+);/gi, (full, code) => {
+    if (code[0] === "#") {
+      const codePoint = code[1] === "x" || code[1] === "X" ? parseInt(code.slice(2), 16) : parseInt(code.slice(1), 10);
+      return Number.isNaN(codePoint) ? full : String.fromCodePoint(codePoint);
+    }
+    return HTML_ENTITIES[code.toLowerCase()] ?? full;
+  });
+
 const CLOSING_SOON_MS = 48 * 3600 * 1000;
 
 const statusOf = (item, now) => {
@@ -70,21 +81,25 @@ const statusOf = (item, now) => {
   return "open";
 };
 
-const toRareLot = (item, now) => ({
-  id: `bat-${item.id}`,
-  title: item.title,
-  make: guessMake(item.title),
-  source: "Bring a Trailer",
-  sourceUrl: item.url,
-  mileage: null, // не в этом списке — только на странице лота; см. Фазу 1 в work-plan.md
-  trim: null,
-  estimateMin: null, // это не наш прогноз, а честная цена BaT — оценки у нас для этих лотов нет
-  estimateMax: null,
-  currentBid: typeof item.current_bid === "number" ? item.current_bid : null,
-  closesAt: item.timestamp_end ? new Date(item.timestamp_end * 1000).toISOString() : null,
-  status: statusOf(item, now),
-  photoUrl: item.thumbnail_url || null,
-});
+const toRareLot = (item, now) => {
+  const title = decodeHtmlEntities(item.title);
+
+  return {
+    id: `bat-${item.id}`,
+    title,
+    make: guessMake(title),
+    source: "Bring a Trailer",
+    sourceUrl: item.url,
+    mileage: null, // не в этом списке — только на странице лота; см. Фазу 1 в work-plan.md
+    trim: null,
+    estimateMin: null, // это не наш прогноз, а честная цена BaT — оценки у нас для этих лотов нет
+    estimateMax: null,
+    currentBid: typeof item.current_bid === "number" ? item.current_bid : null,
+    closesAt: item.timestamp_end ? new Date(item.timestamp_end * 1000).toISOString() : null,
+    status: statusOf(item, now),
+    photoUrl: item.thumbnail_url || null,
+  };
+};
 
 class BatScraper {
   constructor({
