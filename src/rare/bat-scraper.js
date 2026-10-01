@@ -221,8 +221,13 @@ class BatScraper {
   async fetchMissingDetails(lots, cache, { delayMs = 350, sleep = ms => new Promise(resolve => setTimeout(resolve, ms)) } = {}) {
     // Лот закрылся после того, как мы однажды разобрали его страницу (а то и
     // вообще впервые увиден уже закрытым) — в обоих случаях настоящей цены
-    // закрытия в кэше ещё нет, добираем её отдельным проходом.
-    const needsResult = lot => lot.status === "ended" && cache[lot.id]?.finalPrice === undefined;
+    // закрытия в кэше ещё нет, добираем её отдельным проходом. Проверяем
+    // typeof === "number", а не просто "есть ключ": BaT продлевает торги
+    // при ставках в последние секунды, наш timestamp_end из вчерашнего
+    // индекса может посчитать лот закрытым раньше настоящего закрытия —
+    // тогда результата на странице ещё нет, и null нельзя запоминать
+    // навсегда, иначе зависнет так же, как и баг, который чиним.
+    const needsResult = lot => lot.status === "ended" && typeof cache[lot.id]?.finalPrice !== "number";
     const missing = lots.filter(lot => !cache[lot.id] || needsResult(lot));
     let fetched = 0;
 

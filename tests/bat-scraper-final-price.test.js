@@ -102,6 +102,34 @@ test("an already-resolved ended lot is not fetched again", async () => {
   fs.rmSync(dataDir, { recursive: true, force: true });
 });
 
+test("a lot our index thinks is ended but has no result yet is retried, not locked in as unresolved", async () => {
+  // BaT продлевает торги при ставках в последние секунды — наш timestamp_end
+  // из вчерашнего индекса может посчитать лот закрытым раньше настоящего
+  // закрытия. Страница лота тогда ещё не публикует «Sold for»/«Bid to».
+  const dataDir = tmpDir();
+  const now = Date.now();
+  const items = [endedItem({ id: 13, timestamp_end: Math.floor((now - 60_000) / 1000), url: "https://bringatrailer.com/listing/extended-auction/" })];
+  const stillRunningHtml = "<strong class=\"info-value noborder-tiny\"><span class=\"listing-available-countdown\"></span></strong>"; // продлили — результата ещё нет
+
+  let detailFetches = 0;
+  const fetchImpl = async (url) => {
+    if (String(url).includes("/auctions/"))
+      return { ok: true, text: async () => htmlWithListings(items) };
+    detailFetches += 1;
+    return { ok: true, text: async () => stillRunningHtml };
+  };
+
+  const scraper = new BatScraper({ fetchImpl, dataDir, now: () => now, log: () => {} });
+  const firstRun = await scraper.run();
+  assert.equal(firstRun[0].currentBid, 1026000, "результата пока нет — остаётся прежнее значение, не null");
+  assert.equal(detailFetches, 1);
+
+  await scraper.run(); // тот же лот снова "ended" без результата — должны попробовать ещё раз
+  assert.equal(detailFetches, 2, "null не запоминаем навсегда — лот мог продлиться, а не закрыться");
+
+  fs.rmSync(dataDir, { recursive: true, force: true });
+});
+
 test("reserve not met still captures the final high bid and marks it unsold", async () => {
   const dataDir = tmpDir();
   const now = Date.now();
