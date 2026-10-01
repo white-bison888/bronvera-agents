@@ -24,9 +24,11 @@ const auction = (overrides = {}) => ({
 // (offset) => auctions[] — одна общая страница на offset=0, пусто дальше (как настоящая пагинация при <52 лотах).
 const fetchPageOf = auctions => async (offset) => (offset === 0 ? auctions : []);
 
+const noClosed = async () => [];
+
 test("run() maps an auction to a RareLot with mileage/transmission from the list response", async () => {
   const dataDir = tmpDir();
-  const scraper = new CarsAndBidsScraper({ dataDir, fetchPage: fetchPageOf([auction()]), log: () => {} });
+  const scraper = new CarsAndBidsScraper({ dataDir, fetchPage: fetchPageOf([auction()]), fetchClosedPage: noClosed, log: () => {} });
 
   const lots = await scraper.run();
   assert.equal(lots.length, 1);
@@ -48,7 +50,7 @@ test("run() maps an auction to a RareLot with mileage/transmission from the list
 
 test("run() maps transmission code 2 to Механика", async () => {
   const dataDir = tmpDir();
-  const scraper = new CarsAndBidsScraper({ dataDir, fetchPage: fetchPageOf([auction({ transmission: 2 })]), log: () => {} });
+  const scraper = new CarsAndBidsScraper({ dataDir, fetchPage: fetchPageOf([auction({ transmission: 2 })]), fetchClosedPage: noClosed, log: () => {} });
 
   const [lot] = await scraper.run();
   assert.equal(lot.transmission, "Механика");
@@ -58,7 +60,7 @@ test("run() maps transmission code 2 to Механика", async () => {
 
 test("run() leaves transmission null for an unrecognised code rather than guessing", async () => {
   const dataDir = tmpDir();
-  const scraper = new CarsAndBidsScraper({ dataDir, fetchPage: fetchPageOf([auction({ transmission: 9 })]), log: () => {} });
+  const scraper = new CarsAndBidsScraper({ dataDir, fetchPage: fetchPageOf([auction({ transmission: 9 })]), fetchClosedPage: noClosed, log: () => {} });
 
   const [lot] = await scraper.run();
   assert.equal(lot.transmission, null);
@@ -77,6 +79,7 @@ test("run() marks a lot closing within 48h, and still closing (not ended) once s
       auction({ id: "closing", auction_end: soon }),
       auction({ id: "still-live", auction_end: past, status: "live" }),
     ]),
+    fetchClosedPage: noClosed,
     log: () => {},
   });
 
@@ -99,6 +102,7 @@ test("run() marks a lot ended once the platform itself says so, not just by time
   const scraper = new CarsAndBidsScraper({
     dataDir,
     fetchPage: fetchPageOf([auction({ id: "settled", auction_end: past, status: "sold", sale_amount: 251000 })]),
+    fetchClosedPage: noClosed,
     log: () => {},
   });
 
@@ -134,7 +138,7 @@ test("run() reports only genuinely new lots to alerts.checkAfterRun", async () =
   const calls = [];
   const alerts = { checkAfterRun: async (args) => { calls.push(args); } };
 
-  const scraper = new CarsAndBidsScraper({ dataDir, alerts, fetchPage: fetchPageOf([auction({ id: "a1" })]), log: () => {} });
+  const scraper = new CarsAndBidsScraper({ dataDir, alerts, fetchPage: fetchPageOf([auction({ id: "a1" })]), fetchClosedPage: noClosed, log: () => {} });
 
   await scraper.run();
   assert.equal(calls.length, 1);
@@ -161,6 +165,73 @@ test("run() writes a failed status and rethrows when fetching fails", async () =
   const status = scraper.readStatus();
   assert.equal(status.ok, false);
   assert.match(status.error, /прокси/);
+
+  fs.rmSync(dataDir, { recursive: true, force: true });
+});
+
+const closedAuction = (overrides = {}) => auction({
+  id: "closed-1",
+  status: "sold",
+  current_bid: 32750,
+  sale_amount: 32750,
+  auction_end: "2026-10-01T18:00:00.000Z",
+  ...overrides,
+});
+
+test("run() archives a sold lot from /past-auctions into the Stats sold archive", async () => {
+  const dataDir = tmpDir();
+  const scraper = new CarsAndBidsScraper({
+    dataDir,
+    fetchPage: fetchPageOf([]),
+    fetchClosedPage: async () => [closedAuction()],
+    log: () => {},
+  });
+
+  await scraper.run();
+  const sold = scraper.readSold();
+  assert.equal(sold.length, 1);
+  assert.equal(sold[0].id, "carsandbids-closed-1");
+  assert.equal(sold[0].salePrice, 32750);
+  assert.equal(sold[0].sold, true);
+
+  fs.rmSync(dataDir, { recursive: true, force: true });
+});
+
+test("run() keeps a reserve-not-met result but marks it unsold, and drops canceled listings entirely", async () => {
+  const dataDir = tmpDir();
+  const scraper = new CarsAndBidsScraper({
+    dataDir,
+    fetchPage: fetchPageOf([]),
+    fetchClosedPage: async () => [
+      closedAuction({ id: "unsold-1", status: "reserve_not_met", sale_amount: null }),
+      closedAuction({ id: "pulled-1", status: "canceled", sale_amount: null }),
+    ],
+    log: () => {},
+  });
+
+  await scraper.run();
+  const sold = scraper.readSold();
+  assert.equal(sold.length, 1, "canceled — не настоящий результат торгов, в архив не идёт");
+  assert.equal(sold[0].id, "carsandbids-unsold-1");
+  assert.equal(sold[0].sold, false);
+  assert.equal(sold[0].salePrice, 32750, "sale_amount нет — используем current_bid");
+
+  fs.rmSync(dataDir, { recursive: true, force: true });
+});
+
+test("run() does not duplicate a lot already in the sold archive", async () => {
+  const dataDir = tmpDir();
+  const scraper = new CarsAndBidsScraper({
+    dataDir,
+    fetchPage: fetchPageOf([]),
+    fetchClosedPage: async () => [closedAuction()],
+    log: () => {},
+  });
+
+  await scraper.run();
+  await scraper.run();
+
+  assert.equal(scraper.readSold().length, 1);
 
   fs.rmSync(dataDir, { recursive: true, force: true });
 });

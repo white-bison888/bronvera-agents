@@ -3,6 +3,7 @@ const path = require("path");
 const { applyLiteBrowsing } = require("../providers/lite-browsing");
 const { meterBrowserContext } = require("../costs/ledger");
 const { guessMake, guessModel } = require("./title-parser");
+const { loadSoldArchive, saveSoldArchive, yearFromTitle } = require("./sold-archive");
 
 /*
  * BRONVERA Rare, Фаза 3 (01.10.2026): четвёртая площадка — Cars & Bids.
@@ -25,6 +26,7 @@ const { guessMake, guessModel } = require("./title-parser");
  */
 
 const AUCTIONS_URL = "https://carsandbids.com/auctions";
+const PAST_AUCTIONS_URL = "https://carsandbids.com/past-auctions";
 const PAGE_LIMIT = 52;
 const CLOSING_SOON_MS = 48 * 3600 * 1000;
 
@@ -102,6 +104,41 @@ const toRareLot = (item, now) => {
   };
 };
 
+/*
+ * Вкладка Stats (01.10.2026, просьба Mikita): /past-auctions отдаёт
+ * закрытые лоты отдельным статусом — "sold" и "sold_after" (сделка
+ * состоялась, в т.ч. после торгов по договорённости), "reserve_not_met"
+ * (резерв не достигнут, лот не продан — сохраняем как есть, не продан),
+ * "canceled" (снят с продажи — в архив не идёт, не настоящий результат
+ * торгов). sale_amount — настоящая цена сделки, current_bid — запасной
+ * вариант для reserve_not_met.
+ */
+const SOLD_STATUSES = new Set(["sold", "sold_after"]);
+
+const toSoldLot = (item) => {
+  const title = item.title;
+  const make = guessMake(title);
+
+  return {
+    id: `carsandbids-${item.id}`,
+    title,
+    make,
+    model: guessModel(title, make),
+    year: yearFromTitle(title),
+    source: "Cars & Bids",
+    sourceUrl: `https://carsandbids.com/auctions/${item.id}/${slugify(title)}`,
+    soldAt: item.auction_end || null,
+    salePrice: typeof item.sale_amount === "number" ? item.sale_amount : (typeof item.current_bid === "number" ? item.current_bid : null),
+    sold: SOLD_STATUSES.has(item.status),
+    estimateMin: null,
+    estimateMax: null,
+    mileage: parseMileage(item.mileage),
+    transmission: TRANSMISSION_LABELS[item.transmission] || null,
+    conditionFacts: [],
+    photoUrl: photoUrlOf(item.main_photo),
+  };
+};
+
 class CarsAndBidsScraper {
   constructor({
     dataDir = path.join(process.cwd(), "data", "rare", "carsandbids"),
@@ -109,12 +146,21 @@ class CarsAndBidsScraper {
     log = (...args) => console.log(...args),
     alerts = null,
     fetchPage = null, // переопределяется в тестах — (offset) => [auction, ...], без Playwright
+    fetchClosedPage = null, // переопределяется в тестах — () => [auction, ...], без Playwright
   } = {}) {
-    Object.assign(this, { dataDir, now, log, alerts, fetchPage });
+    Object.assign(this, { dataDir, now, log, alerts, fetchPage, fetchClosedPage });
   }
 
   lotsFile() {
     return path.join(this.dataDir, "lots.json");
+  }
+
+  soldFile() {
+    return path.join(this.dataDir, "sold.json");
+  }
+
+  readSold() {
+    return Object.values(loadSoldArchive(this.soldFile()));
   }
 
   statusFile() {
@@ -145,25 +191,12 @@ class CarsAndBidsScraper {
   }
 
   /*
-   * Один сеанс в браузере через прокси: открываем ленту и скроллим, пока
-   * не соберём все активные лоты (сайт подгружает их офсетом сам, запрос
-   * подписывается его собственным JS — не воспроизводим подпись, просто
-   * читаем то, что он сам получил).
+   * Общий сеанс в браузере через прокси — без него Cloudflare отдаёт
+   * только страницу проверки. callback получает подготовленную страницу
+   * и сам решает, что на ней делать (разные сценарии у /auctions и
+   * /past-auctions, см. fetchAllAuctions и fetchPastAuctions).
    */
-  async fetchAllAuctions() {
-    if (this.fetchPage) {
-      const pages = [];
-      for (let offset = 0; ; offset += PAGE_LIMIT) {
-        const items = await this.fetchPage(offset);
-        if (!items.length)
-          break;
-        pages.push(...items);
-        if (items.length < PAGE_LIMIT)
-          break;
-      }
-      return pages;
-    }
-
+  async withBrowserPage(label, callback) {
     const { chromium } = require("playwright");
     const proxy = process.env.PROXY_SERVER
       ? { server: process.env.PROXY_SERVER, username: process.env.PROXY_USERNAME, password: process.env.PROXY_PASSWORD }
@@ -185,9 +218,38 @@ class CarsAndBidsScraper {
       });
 
       await applyLiteBrowsing(context);
-      const meter = meterBrowserContext(context, { source: "выдача Cars & Bids", viaProxy: Boolean(proxy) });
+      const meter = meterBrowserContext(context, { source: label, viaProxy: Boolean(proxy) });
 
       const page = await context.newPage();
+      const result = await callback(page);
+      await meter.finish();
+      return result;
+    }
+    finally {
+      await browser.close();
+    }
+  }
+
+  /*
+   * Открываем ленту и скроллим, пока не соберём все активные лоты (сайт
+   * подгружает их офсетом сам, запрос подписывается его собственным JS —
+   * не воспроизводим подпись, просто читаем то, что он сам получил).
+   */
+  async fetchAllAuctions() {
+    if (this.fetchPage) {
+      const pages = [];
+      for (let offset = 0; ; offset += PAGE_LIMIT) {
+        const items = await this.fetchPage(offset);
+        if (!items.length)
+          break;
+        pages.push(...items);
+        if (items.length < PAGE_LIMIT)
+          break;
+      }
+      return pages;
+    }
+
+    return this.withBrowserPage("выдача Cars & Bids", async (page) => {
       const byId = new Map();
       let total = Infinity;
 
@@ -225,12 +287,54 @@ class CarsAndBidsScraper {
         stall = arrived ? 0 : stall + 1;
       }
 
-      await meter.finish();
       return [...byId.values()];
+    });
+  }
+
+  /*
+   * Вкладка Stats (01.10.2026): /past-auctions отдаёт свежезакрытые лоты
+   * первой страницей (сортировка — от недавних, проверено разведкой),
+   * без подгрузки по скроллу — одного перехваченного ответа достаточно
+   * на суточный прогон, глубже не листаем специально (не нужна вся
+   * история, только то, что закрылось со вчера).
+   */
+  async fetchPastAuctions() {
+    if (this.fetchClosedPage)
+      return this.fetchClosedPage();
+
+    return this.withBrowserPage("результаты Cars & Bids", async (page) => {
+      const response = page.waitForResponse(r => r.url().includes("status=closed"), { timeout: 45000 });
+      await page.goto(PAST_AUCTIONS_URL, { waitUntil: "domcontentloaded", timeout: 45000 });
+      const data = await (await response).json();
+      return data.auctions || [];
+    });
+  }
+
+  /*
+   * Архив копится, не перезаписывается: canceled — не настоящий результат
+   * торгов, в архив не идёт; остальные статусы добавляются один раз.
+   */
+  async updateSoldArchive() {
+    const items = await this.fetchPastAuctions();
+    const archive = loadSoldArchive(this.soldFile());
+    let added = 0;
+
+    for (const item of items) {
+      if (item.status === "canceled")
+        continue;
+      const soldLot = toSoldLot(item);
+      if (!archive[soldLot.id]) {
+        archive[soldLot.id] = soldLot;
+        added += 1;
+      }
     }
-    finally {
-      await browser.close();
+
+    if (added) {
+      saveSoldArchive(this.soldFile(), archive);
+      this.log(`BRONVERA Rare: добавил ${added} проданных лотов Cars & Bids в архив (всего ${Object.keys(archive).length})`);
     }
+
+    return added;
   }
 
   async run() {
@@ -250,6 +354,9 @@ class CarsAndBidsScraper {
       );
 
       this.writeStatus({ source: "Cars & Bids", lastRunAt: new Date(now).toISOString(), ok: true, count: lots.length, error: null });
+
+      // Архив проданных для Stats — не должен ронять весь прогон активных лотов, если /past-auctions подвела.
+      await this.updateSoldArchive().catch(error => this.log("BRONVERA Rare: не добрал архив продаж Cars & Bids:", error.message));
 
       if (this.alerts) {
         const newLots = lots.filter(lot => !previousIds.has(lot.id));

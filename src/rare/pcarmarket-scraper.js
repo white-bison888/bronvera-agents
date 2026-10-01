@@ -4,6 +4,7 @@ const vm = require("vm");
 const { applyLiteBrowsing } = require("../providers/lite-browsing");
 const { meterBrowserContext } = require("../costs/ledger");
 const { describeTransmission } = require("./transmission");
+const { loadSoldArchive, saveSoldArchive, yearFromTitle } = require("./sold-archive");
 
 /*
  * BRONVERA Rare, Фаза 3 (01.10.2026): вторая площадка — PCARMARKET.
@@ -29,6 +30,7 @@ const { describeTransmission } = require("./transmission");
  */
 
 const AUCTIONS_URL = "https://www.pcarmarket.com/auctions";
+const RESULTS_URL = "https://www.pcarmarket.com/results";
 const CLOSING_SOON_MS = 48 * 3600 * 1000;
 
 /*
@@ -37,7 +39,13 @@ const CLOSING_SOON_MS = 48 * 3600 * 1000;
  * этот блок в песочнице, подставив самое необходимое вместо document/
  * window — остальной код в нём эти браузерные объекты не трогает.
  */
-const parseSearchFromHtml = (html) => {
+/*
+ * matchQuery принимает весь queryKey (не только "search") — страница
+ * /results несёт тот же гидратационный кэш, но с другим filterBy
+ * (status:ITEM_CLOSED), а не другим queryKey[1], так что отличать запросы
+ * по самому фильтру, а не только по имени.
+ */
+const parseQueryFromHtml = (html, matchQuery) => {
   const scripts = [...html.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/g)].map(m => m[1]);
   // Самый большой из блоков, где реально есть данные выдачи — нулевой $_TSR-заголовок тоже матчит "resultCount" в типах, но он маленький.
   const dataScript = scripts
@@ -65,13 +73,16 @@ const parseSearchFromHtml = (html) => {
   }
 
   const queries = sandbox.$_TSR?.router?.dehydratedData?.dehydratedQueryClient?.queries || [];
-  const query = queries.find(q => Array.isArray(q.queryKey) && q.queryKey[0] === "basta" && q.queryKey[1] === "search");
+  const query = queries.find(q => Array.isArray(q.queryKey) && q.queryKey[0] === "basta" && matchQuery(q.queryKey));
 
   if (!query)
-    throw new Error("не нашёл выдачу поиска в данных страницы PCARMARKET");
+    throw new Error("не нашёл нужную выдачу в данных страницы PCARMARKET");
 
   return query.state.data.search;
 };
+
+const parseSearchFromHtml = html =>
+  parseQueryFromHtml(html, queryKey => queryKey[1] === "search");
 
 const centsToUsd = cents => typeof cents === "number" ? Math.round(cents) / 100 : null;
 
@@ -126,6 +137,38 @@ const lotUrl = (slugFullPath) => {
 // 0 здесь значит «не выставлена», а не «ноль долларов» — как и у текущей ставки без торгов.
 const estimateOf = cents => typeof cents === "number" && cents > 0 ? centsToUsd(cents) : null;
 
+/*
+ * Вкладка Stats (01.10.2026, просьба Mikita): настоящая цена закрытия для
+ * архива проданных лотов. currentBid в /results — то же поле ставки, но
+ * notifications несёт ItemSoldNotification.amount при продаже через Buy
+ * Now в обход торгов (см. находку на "Illuminated Ferrari Sign" —
+ * currentBid 2700$, реальная продажа 3200$) — предпочитаем его, когда
+ * есть.
+ */
+const soldPriceOf = (node) => {
+  const notification = (node.notifications || []).find(n => n.__typename === "ItemSoldNotification");
+  return notification ? centsToUsd(notification.amount) : centsToUsd(node.currentBid);
+};
+
+const toSoldLot = node => ({
+  id: `pcarmarket-${node.id}`,
+  title: node.title,
+  make: node.schema?.data?.make || null,
+  model: node.schema?.data?.model || null,
+  year: yearFromTitle(node.title),
+  source: "PCARMARKET",
+  sourceUrl: lotUrl(node.slugFullPath),
+  soldAt: node.dates?.closingEnd || null,
+  salePrice: soldPriceOf(node),
+  sold: node.itemResult === "WON" || node.itemResult === "WON_UNDER_THE_RESERVE",
+  estimateMin: estimateOf(node.estimates?.low),
+  estimateMax: estimateOf(node.estimates?.high),
+  mileage: milesOf(node.schema?.data?.odometerValue, node.schema?.data?.odometerUnit),
+  transmission: describeTransmission(node.schema?.data?.transmission),
+  conditionFacts: [],
+  photoUrl: node.images?.[0]?.url || null,
+});
+
 const toRareLot = (node, now) => {
   const data = node.schema?.data || {};
   const closesAt = node.dates?.closingEnd || null;
@@ -157,12 +200,21 @@ class PcarmarketScraper {
     log = (...args) => console.log(...args),
     alerts = null,
     fetchPage = null, // переопределяется в тестах — (pageNum) => html, без Playwright
+    fetchResultsPage = null, // переопределяется в тестах — () => html, без Playwright
   } = {}) {
-    Object.assign(this, { dataDir, now, log, alerts, fetchPage });
+    Object.assign(this, { dataDir, now, log, alerts, fetchPage, fetchResultsPage });
   }
 
   lotsFile() {
     return path.join(this.dataDir, "lots.json");
+  }
+
+  soldFile() {
+    return path.join(this.dataDir, "sold.json");
+  }
+
+  readSold() {
+    return Object.values(loadSoldArchive(this.soldFile()));
   }
 
   statusFile() {
@@ -196,12 +248,11 @@ class PcarmarketScraper {
    * Один заход через Playwright + резидентный прокси (тот же, что у
    * bid.cars) — без прокси Cloudflare отдаёт только страницу проверки.
    * Картинки и шрифты не грузим (applyLiteBrowsing) — страница нужна
-   * только за текстом, а трафик через прокси платный.
+   * только за текстом, а трафик через прокси платный. Общий метод для
+   * /auctions (активные) и /results (вкладка Stats, 01.10.2026) — одна
+   * и та же вёрстка TanStack Start под обоими путями.
    */
-  async fetchPageHtml(pageNum) {
-    if (this.fetchPage)
-      return this.fetchPage(pageNum);
-
+  async fetchHtml(url, label) {
     const { chromium } = require("playwright");
     const proxy = process.env.PROXY_SERVER
       ? { server: process.env.PROXY_SERVER, username: process.env.PROXY_USERNAME, password: process.env.PROXY_PASSWORD }
@@ -223,10 +274,9 @@ class PcarmarketScraper {
       });
 
       await applyLiteBrowsing(context);
-      const meter = meterBrowserContext(context, { source: "выдача PCARMARKET", viaProxy: Boolean(proxy) });
+      const meter = meterBrowserContext(context, { source: label, viaProxy: Boolean(proxy) });
 
       const page = await context.newPage();
-      const url = pageNum > 1 ? `${AUCTIONS_URL}?page=${pageNum}` : AUCTIONS_URL;
       const response = await page.goto(url, { waitUntil: "domcontentloaded", timeout: 60000 });
 
       if (!response || response.status() >= 400)
@@ -248,6 +298,14 @@ class PcarmarketScraper {
     }
   }
 
+  async fetchPageHtml(pageNum) {
+    if (this.fetchPage)
+      return this.fetchPage(pageNum);
+
+    const url = pageNum > 1 ? `${AUCTIONS_URL}?page=${pageNum}` : AUCTIONS_URL;
+    return this.fetchHtml(url, "выдача PCARMARKET");
+  }
+
   async fetchActiveListings() {
     const firstHtml = await this.fetchPageHtml(1);
     const first = parseSearchFromHtml(firstHtml);
@@ -261,6 +319,55 @@ class PcarmarketScraper {
 
     // Watches/Parts&Memorabilia — не "редкая машина" в смысле этого сервиса.
     return edges.map(e => e.node).filter(node => node.schema?.data?.schemaName === "Vehicle");
+  }
+
+  /*
+   * Вкладка Stats (01.10.2026): /results несёт тот же гидратационный кэш,
+   * что и /auctions, но с запросом, уже отфильтрованным площадкой на
+   * status:ITEM_CLOSED && itemResult ∈ [WON, WON_UNDER_THE_RESERVE] —
+   * ровно то, что нужно для архива проданных. Одна страница (24 лота,
+   * отсортированы по closingEnd от новых к старым) с лихвой покрывает
+   * суточный прогон — паговать на всю историю незачем.
+   */
+  async fetchResultsHtml() {
+    if (this.fetchResultsPage)
+      return this.fetchResultsPage();
+
+    return this.fetchHtml(RESULTS_URL, "результаты PCARMARKET");
+  }
+
+  async fetchClosedResults() {
+    const html = await this.fetchResultsHtml();
+    const search = parseQueryFromHtml(html, queryKey =>
+      queryKey[1] === "search" && typeof queryKey[2]?.filterBy === "string" && queryKey[2].filterBy.includes("ITEM_CLOSED"));
+
+    return search.edges.map(e => e.node).filter(node => node.schema?.data?.schemaName === "Vehicle");
+  }
+
+  /*
+   * Архив копится, не перезаписывается — каждый проданный лот добавляется
+   * один раз, когда впервые встретили его на /results.
+   */
+  async updateSoldArchive() {
+    const nodes = await this.fetchClosedResults();
+    const archive = loadSoldArchive(this.soldFile());
+    let added = 0;
+
+    for (const node of nodes) {
+      const soldLot = toSoldLot(node);
+      if (!archive[soldLot.id]) {
+        archive[soldLot.id] = soldLot;
+        added += 1;
+      }
+    }
+
+    if (added)
+      saveSoldArchive(this.soldFile(), archive);
+
+    if (added)
+      this.log(`BRONVERA Rare: добавил ${added} проданных лотов PCARMARKET в архив (всего ${Object.keys(archive).length})`);
+
+    return added;
   }
 
   async run() {
@@ -280,6 +387,9 @@ class PcarmarketScraper {
       );
 
       this.writeStatus({ source: "PCARMARKET", lastRunAt: new Date(now).toISOString(), ok: true, count: lots.length, error: null });
+
+      // Архив проданных для Stats — не должен ронять весь прогон активных лотов, если /results подвела.
+      await this.updateSoldArchive().catch(error => this.log("BRONVERA Rare: не добрал архив продаж PCARMARKET:", error.message));
 
       if (this.alerts) {
         const newLots = lots.filter(lot => !previousIds.has(lot.id));

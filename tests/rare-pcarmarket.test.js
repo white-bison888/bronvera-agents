@@ -30,6 +30,25 @@ self.$_TSR={router:{dehydratedData:{dehydratedQueryClient:{queries:[
 </script>
 </body></html>`;
 
+/*
+ * /results несёт тот же гидратационный кэш, но с запросом, уже
+ * отфильтрованным площадкой на status:ITEM_CLOSED — тот же queryKey
+ * ["basta","search",...], отличается только filterBy внутри него.
+ */
+const resultsHtml = ({ nodes = [] } = {}) => `<!DOCTYPE html><html><body>
+<script>(self.$R=self.$R||{})["tsr"]=[];</script>
+<script>
+self.$_TSR={router:{dehydratedData:{dehydratedQueryClient:{queries:[
+  {queryKey:["basta","search",{type:"ITEM",filterBy:"status:ITEM_CLOSED && (itemResult:[ITEM_RESULT_WON,ITEM_RESULT_WON_UNDER_THE_RESERVE] || (offerEnabled:false && buyNowEnabled:false))"}],state:{data:{search:{
+    resultCount:${nodes.length},
+    edges:${JSON.stringify(nodes.map(node => ({ node })))}
+  }}}}
+]}}}};
+</script>
+</body></html>`;
+
+const noResults = async () => resultsHtml();
+
 const vehicleNode = (overrides = {}) => ({
   __typename: "Item",
   id: "n1",
@@ -93,6 +112,7 @@ test("run() maps a vehicle node to a RareLot with Russian transmission/ownerType
   const scraper = new PcarmarketScraper({
     dataDir,
     fetchPage: async () => html({ nodes: [vehicleNode()] }),
+    fetchResultsPage: noResults,
     log: () => {},
   });
 
@@ -124,6 +144,7 @@ test("run() converts kilometers to miles for odometerUnit other than Miles", asy
     fetchPage: async () => html({ nodes: [vehicleNode({
       schema: { data: { ...vehicleNode().schema.data, odometerValue: 160934, odometerUnit: "Kilometers" } },
     })] }),
+    fetchResultsPage: noResults,
     log: () => {},
   });
 
@@ -144,6 +165,7 @@ test("run() marks a lot closing within 48h, and still closing (not ended) once c
       vehicleNode({ id: "closing", dates: { closingEnd: soon } }),
       vehicleNode({ id: "still-open", dates: { closingEnd: past }, status: "ITEM_OPEN" }),
     ] }),
+    fetchResultsPage: noResults,
     log: () => {},
   });
 
@@ -164,6 +186,7 @@ test("run() marks a lot ended once the platform itself says so, not just by time
   const scraper = new PcarmarketScraper({
     dataDir,
     fetchPage: async () => html({ nodes: [vehicleNode({ dates: { closingEnd: past }, status: "ITEM_CLOSED" })] }),
+    fetchResultsPage: noResults,
     log: () => {},
   });
 
@@ -182,6 +205,7 @@ test("run() reports only genuinely new lots to alerts.checkAfterRun, comparing a
     dataDir,
     alerts,
     fetchPage: async () => html({ nodes: [vehicleNode({ id: "n1" })] }),
+    fetchResultsPage: noResults,
     log: () => {},
   });
 
@@ -210,6 +234,87 @@ test("run() writes a failed status and rethrows when the page can't be parsed", 
   const status = scraper.readStatus();
   assert.equal(status.ok, false);
   assert.match(status.error, /не нашёл/);
+
+  fs.rmSync(dataDir, { recursive: true, force: true });
+});
+
+const closedNode = (overrides = {}) => vehicleNode({
+  id: "sold-1",
+  status: "ITEM_CLOSED",
+  itemResult: "WON",
+  currentBid: 500000, // $5000
+  dates: { closingEnd: "2026-09-30T20:10:39Z" },
+  ...overrides,
+});
+
+test("run() archives a closed lot from /results into the Stats sold archive", async () => {
+  const dataDir = tmpDir();
+  const scraper = new PcarmarketScraper({
+    dataDir,
+    fetchPage: async () => html({ nodes: [] }), // активных лотов нет — архив продаж не зависит от них
+    fetchResultsPage: async () => resultsHtml({ nodes: [closedNode()] }),
+    log: () => {},
+  });
+
+  await scraper.run();
+  const sold = scraper.readSold();
+  assert.equal(sold.length, 1);
+  assert.equal(sold[0].id, "pcarmarket-sold-1");
+  assert.equal(sold[0].make, "Porsche");
+  assert.equal(sold[0].salePrice, 5000);
+  assert.equal(sold[0].sold, true);
+  assert.equal(sold[0].soldAt, "2026-09-30T20:10:39Z");
+
+  fs.rmSync(dataDir, { recursive: true, force: true });
+});
+
+test("run() prefers the Buy Now sale amount over the last bid", async () => {
+  const dataDir = tmpDir();
+  const scraper = new PcarmarketScraper({
+    dataDir,
+    fetchPage: async () => html({ nodes: [] }),
+    fetchResultsPage: async () => resultsHtml({ nodes: [closedNode({
+      notifications: [{ __typename: "ItemSoldNotification", amount: 320000, currency: "USD", source: "BUY", date: "2026-10-01T15:08:10Z" }],
+    })] }),
+    log: () => {},
+  });
+
+  await scraper.run();
+  const [sold] = scraper.readSold();
+  assert.equal(sold.salePrice, 3200, "Buy Now обходит текущую ставку совсем — notifications важнее currentBid");
+
+  fs.rmSync(dataDir, { recursive: true, force: true });
+});
+
+test("run() does not duplicate a lot already in the sold archive", async () => {
+  const dataDir = tmpDir();
+  const scraper = new PcarmarketScraper({
+    dataDir,
+    fetchPage: async () => html({ nodes: [] }),
+    fetchResultsPage: async () => resultsHtml({ nodes: [closedNode()] }),
+    log: () => {},
+  });
+
+  await scraper.run();
+  await scraper.run(); // то же самое ещё раз — /results всегда отдаёт недавние закрытия заново
+
+  assert.equal(scraper.readSold().length, 1);
+
+  fs.rmSync(dataDir, { recursive: true, force: true });
+});
+
+test("a reserve-not-met result is kept but marked unsold", async () => {
+  const dataDir = tmpDir();
+  const scraper = new PcarmarketScraper({
+    dataDir,
+    fetchPage: async () => html({ nodes: [] }),
+    fetchResultsPage: async () => resultsHtml({ nodes: [closedNode({ id: "unsold-1", itemResult: null })] }),
+    log: () => {},
+  });
+
+  await scraper.run();
+  const [sold] = scraper.readSold();
+  assert.equal(sold.sold, false);
 
   fs.rmSync(dataDir, { recursive: true, force: true });
 });
