@@ -70,6 +70,40 @@ const decodeHtmlEntities = (text) =>
     return HTML_ENTITIES[code.toLowerCase()] ?? full;
   });
 
+/*
+ * Пробег, коробка передач, VIN и тип продавца — решение Mikita 30.09.2026
+ * расширить «ключевую информацию» сверх заголовка, но не копировать всю
+ * карточку BaT целиком. Этих полей нет в общей выдаче — только на
+ * странице самого лота, и, в отличие от текущей ставки, они не меняются
+ * по ходу торгов. Поэтому забираем их один раз на лот и кэшируем
+ * навсегда в lot-details.json, а не перезапрашиваем каждый день вместе
+ * со списком.
+ */
+const parseListingDetails = (html) => {
+  const blockMatch = html.match(/<strong>Listing Details<\/strong><ul>(.*?)<\/ul>/s);
+  const items = blockMatch
+    ? [...blockMatch[1].matchAll(/<li>(.*?)<\/li>/gs)].map(m => decodeHtmlEntities(m[1].replace(/<[^>]+>/g, "").trim()))
+    : [];
+
+  const vinItem = items.find(item => /^(Chassis|VIN):/i.test(item));
+  const vin = vinItem ? vinItem.replace(/^(Chassis|VIN):\s*/i, "").trim() : null;
+
+  // BaT иногда пишет сокращённо: «17k Miles» вместо «17,000 Miles».
+  const mileageItem = items.find(item => /\bmiles?\b/i.test(item));
+  const mileageMatch = mileageItem ? mileageItem.match(/([\d,]+)\s*(k)?\+?\s*Miles?/i) : null;
+  const mileage = mileageMatch
+    ? Math.round(Number(mileageMatch[1].replace(/,/g, "")) * (mileageMatch[2] ? 1000 : 1))
+    : null;
+
+  const transmission = items.find(item => /\b(manual|automatic)\b/i.test(item)) || null;
+
+  const ownerMatch = html.match(/<strong>Private Party or Dealer<\/strong>:\s*([^<]+)</);
+  const ownerTypeRaw = ownerMatch ? decodeHtmlEntities(ownerMatch[1].trim()) : null;
+  const ownerType = ownerTypeRaw === "Private Party" ? "Частное лицо" : ownerTypeRaw === "Dealer" ? "Дилер" : ownerTypeRaw;
+
+  return { vin, mileage, trim: transmission, ownerType };
+};
+
 const CLOSING_SOON_MS = 48 * 3600 * 1000;
 
 const statusOf = (item, now) => {
@@ -90,8 +124,10 @@ const toRareLot = (item, now) => {
     make: guessMake(title),
     source: "Bring a Trailer",
     sourceUrl: item.url,
-    mileage: null, // не в этом списке — только на странице лота; см. Фазу 1 в work-plan.md
+    mileage: null, // подставляется из lot-details.json после первого разбора страницы лота
     trim: null,
+    vin: null,
+    ownerType: null,
     estimateMin: null, // это не наш прогноз, а честная цена BaT — оценки у нас для этих лотов нет
     estimateMax: null,
     currentBid: typeof item.current_bid === "number" ? item.current_bid : null,
@@ -113,6 +149,66 @@ class BatScraper {
 
   lotsFile() {
     return path.join(this.dataDir, "lots.json");
+  }
+
+  detailsFile() {
+    return path.join(this.dataDir, "lot-details.json");
+  }
+
+  loadDetailsCache() {
+    try {
+      return JSON.parse(fs.readFileSync(this.detailsFile(), "utf8"));
+    }
+    catch {
+      return {};
+    }
+  }
+
+  saveDetailsCache(cache) {
+    fs.mkdirSync(this.dataDir, { recursive: true });
+    fs.writeFileSync(this.detailsFile(), JSON.stringify(cache, null, 2));
+  }
+
+  async fetchLotDetails(url) {
+    const response = await this.fetchImpl(url, {
+      headers: { "User-Agent": "Mozilla/5.0 (compatible; BRONVERA-Rare/1.0)" },
+    });
+
+    if (!response.ok)
+      throw new Error(`страница лота ответила ${response.status}`);
+
+    return parseListingDetails(await response.text());
+  }
+
+  /*
+   * Новые лоты за прогон — последовательно, с паузой: вежливо к BaT и не
+   * похоже на массовый обход. Если лотов много (первый прогон — тысяча с
+   * лишним), это не проблема: сборщик фоновый, не держит HTTP-ответ сайта.
+   */
+  async fetchMissingDetails(lots, cache, { delayMs = 350, sleep = ms => new Promise(resolve => setTimeout(resolve, ms)) } = {}) {
+    const missing = lots.filter(lot => lot.status !== "ended" && !cache[lot.id]);
+    let fetched = 0;
+
+    for (const lot of missing) {
+      try {
+        cache[lot.id] = await this.fetchLotDetails(lot.sourceUrl);
+      }
+      catch (error) {
+        this.log(`BRONVERA Rare: не разобрал страницу лота ${lot.id}: ${error.message}`);
+        continue;
+      }
+      finally {
+        fetched += 1;
+        if (fetched % 100 === 0)
+          this.log(`BRONVERA Rare: разобрано ${fetched}/${missing.length} новых страниц лотов`);
+      }
+      await sleep(delayMs);
+    }
+
+    if (missing.length)
+      this.log(`BRONVERA Rare: добрал детали по ${fetched} новым лотам (всего в кэше ${Object.keys(cache).length})`);
+
+    return cache;
   }
 
   /*
@@ -145,14 +241,20 @@ class BatScraper {
       .filter(item => !(item.categories || []).some(id => EXCLUDE_CATEGORY_IDS.has(String(id))))
       .map(item => toRareLot(item, now));
 
+    this.log(`BRONVERA Rare: собрано ${lots.length} лотов с Bring a Trailer (из ${items.length} активных объявлений всех категорий)`);
+
+    const detailsCache = await this.fetchMissingDetails(lots, this.loadDetailsCache());
+    this.saveDetailsCache(detailsCache);
+
+    const enriched = lots.map(lot => ({ ...lot, ...(detailsCache[lot.id] || {}) }));
+
     fs.mkdirSync(this.dataDir, { recursive: true });
     fs.writeFileSync(
       this.lotsFile(),
-      JSON.stringify({ updatedAt: new Date(now).toISOString(), source: "Bring a Trailer", count: lots.length, lots }, null, 2),
+      JSON.stringify({ updatedAt: new Date(now).toISOString(), source: "Bring a Trailer", count: enriched.length, lots: enriched }, null, 2),
     );
 
-    this.log(`BRONVERA Rare: собрано ${lots.length} лотов с Bring a Trailer (из ${items.length} активных объявлений всех категорий)`);
-    return lots;
+    return enriched;
   }
 
   readLots() {
