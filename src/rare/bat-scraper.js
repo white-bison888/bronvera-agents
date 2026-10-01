@@ -90,7 +90,24 @@ const parseListingDetails = (html) => {
   const ownerTypeRaw = ownerMatch ? decodeHtmlEntities(ownerMatch[1].trim()) : null;
   const ownerType = ownerTypeRaw === "Private Party" ? "Частное лицо" : ownerTypeRaw === "Dealer" ? "Дилер" : ownerTypeRaw;
 
-  return { vin, mileage, transmission: describeTransmission(transmissionRaw), ownerType };
+  return { vin, mileage, transmission: describeTransmission(transmissionRaw), ownerType, ...parseAuctionResult(html) };
+};
+
+/*
+ * Баг от Mikita 01.10.2026: цена в индексе «/auctions/» обновляется у нас
+ * раз в сутки, а решающие ставки часто идут в последние минуты торгов —
+ * к моменту следующего прогона лот уже закрылся дороже, чем мы видели
+ * (конкретный случай: у нас $1 026 000, у BaT «Sold for $1 261 000»).
+ * После закрытия BaT публикует настоящий результат на странице лота —
+ * «Sold for $X» (резерв достигнут) или «Bid to $X» (не достигнут, лот не
+ * продан) — это и есть источник правды для завершённых лотов, индекс
+ * больше не используется как финальная цена (см. run()).
+ */
+const parseAuctionResult = (html) => {
+  const match = html.match(/info-value noborder-tiny">(Sold for|Bid to) <strong>USD \$([\d,]+)<\/strong>/);
+  if (!match)
+    return { finalPrice: null, sold: null };
+  return { finalPrice: Number(match[2].replace(/,/g, "")), sold: match[1] === "Sold for" };
 };
 
 const CLOSING_SOON_MS = 48 * 3600 * 1000;
@@ -202,12 +219,30 @@ class BatScraper {
    * лишним), это не проблема: сборщик фоновый, не держит HTTP-ответ сайта.
    */
   async fetchMissingDetails(lots, cache, { delayMs = 350, sleep = ms => new Promise(resolve => setTimeout(resolve, ms)) } = {}) {
-    const missing = lots.filter(lot => lot.status !== "ended" && !cache[lot.id]);
+    // Лот закрылся после того, как мы однажды разобрали его страницу (а то и
+    // вообще впервые увиден уже закрытым) — в обоих случаях настоящей цены
+    // закрытия в кэше ещё нет, добираем её отдельным проходом.
+    const needsResult = lot => lot.status === "ended" && cache[lot.id]?.finalPrice === undefined;
+    const missing = lots.filter(lot => !cache[lot.id] || needsResult(lot));
     let fetched = 0;
 
     for (const lot of missing) {
       try {
-        cache[lot.id] = await this.fetchLotDetails(lot.sourceUrl);
+        const details = await this.fetchLotDetails(lot.sourceUrl);
+        // Слияние, не замена: повторный разбор — только за finalPrice у уже
+        // закрытых лотов, и если на этот раз какое-то поле не нашлось
+        // (например, другая вёрстка страницы после закрытия торгов), уже
+        // известные пробег/VIN/коробка не должны стираться пустым значением.
+        const facts = Object.fromEntries(
+          Object.entries(details).filter(([key, value]) => key !== "finalPrice" && key !== "sold" && value !== null),
+        );
+        // finalPrice/sold фиксируем только для уже закрытых лотов — null
+        // здесь означает «проверили, результата на странице нет», и это
+        // наверняка значит «ещё не ended» для открытого лота, не отсутствие
+        // результата. Фиксировать его раньше времени — не перепроверим
+        // позже, когда торги правда закроются (см. needsResult выше).
+        const result = lot.status === "ended" ? { finalPrice: details.finalPrice, sold: details.sold } : {};
+        cache[lot.id] = { ...cache[lot.id], ...facts, ...result };
       }
       catch (error) {
         this.log(`BRONVERA Rare: не разобрал страницу лота ${lot.id}: ${error.message}`);
@@ -266,7 +301,13 @@ class BatScraper {
       const detailsCache = await this.fetchMissingDetails(lots, this.loadDetailsCache());
       this.saveDetailsCache(detailsCache);
 
-      const enriched = lots.map(lot => ({ ...lot, ...(detailsCache[lot.id] || {}) }));
+      const enriched = lots.map((lot) => {
+        const details = detailsCache[lot.id] || {};
+        // Для завершённых лотов настоящая цена закрытия (finalPrice) важнее
+        // устаревшего снимка ставки из индекса — см. parseAuctionResult.
+        const currentBid = (lot.status === "ended" && typeof details.finalPrice === "number") ? details.finalPrice : lot.currentBid;
+        return { ...lot, ...details, currentBid };
+      });
 
       fs.mkdirSync(this.dataDir, { recursive: true });
       fs.writeFileSync(
