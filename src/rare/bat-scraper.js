@@ -59,6 +59,65 @@ const guessMake = (title) => {
   return rest.split(/\s+/)[0] || "";
 };
 
+/*
+ * Модель — слова после марки до первого слова, которое явно про кузов или
+ * трансмиссию, а не про саму модель («Modified 1985 BMW 325e Coupe
+ * 5-Speed» → «325e», без «Coupe» и «5-Speed»). Не чипсет шасси (у BaT в
+ * заголовке его обычно нет) — только то, что буквально написано.
+ */
+const MODEL_STOP_WORDS = new Set([
+  "coupe", "sedan", "convertible", "wagon", "hatchback", "roadster", "targa",
+  "spyder", "spider", "cabriolet", "pickup", "truck", "suv", "van", "hardtop",
+  "fastback", "liftback", "shooting", "brake", "manual", "automatic",
+  "dual-clutch", "transaxle", "transmission", "gearbox", "awd", "rwd", "fwd",
+  "4x4", "4×4",
+]);
+const SPEED_WORD_RE = /^(one|two|three|four|five|six|seven|eight|nine|ten|\d+)[\s-]*speed$/i;
+
+const guessModel = (title, make) => {
+  const match = title.match(/\b(19|20)\d{2}\b\s+(.+)$/);
+  let rest = match ? match[2] : title;
+  if (rest.startsWith(make))
+    rest = rest.slice(make.length).trim();
+
+  const words = [];
+  for (const word of rest.split(/\s+/)) {
+    if (MODEL_STOP_WORDS.has(word.toLowerCase()) || SPEED_WORD_RE.test(word))
+      break;
+    words.push(word);
+  }
+  return words.join(" ") || null;
+};
+
+/*
+ * «Five-Speed Manual Transmission», «Six-Speed Manual Transaxle»,
+ * «Seven-Speed Dual-Clutch Automatic Transaxle» — у BaT в заголовке
+ * пункта, не отдельными полями. Превращаем в короткое «5-ступенчатая
+ * механика» вместо сырого английского текста под заголовком
+ * «Коробка передач».
+ */
+const SPEED_NUMBER_WORDS = { one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10 };
+
+const describeTransmission = (raw) => {
+  if (!raw)
+    return null;
+
+  const speedMatch = raw.match(/\b(one|two|three|four|five|six|seven|eight|nine|ten|\d+)[\s-]*speed/i);
+  const speed = speedMatch ? (SPEED_NUMBER_WORDS[speedMatch[1].toLowerCase()] ?? Number(speedMatch[1])) : null;
+  const isDualClutch = /dual-clutch/i.test(raw);
+  const isAutomatic = !isDualClutch && /automatic/i.test(raw);
+  const isManual = /manual/i.test(raw);
+
+  if (isDualClutch)
+    return speed ? `${speed}-ступенчатый робот (DCT)` : "Робот (DCT)";
+  if (isAutomatic)
+    return speed ? `${speed}-ступенчатый автомат` : "Автомат";
+  if (isManual)
+    return speed ? `${speed}-ступенчатая механика` : "Механика";
+
+  return raw; // тип не распознали — показываем как есть, не выдумываем
+};
+
 // Заголовки у BaT приходят как HTML: "4&#215;4" вместо "4×4", "&amp;" вместо "&".
 const HTML_ENTITIES = { amp: "&", quot: "\"", "#039": "'", apos: "'", lt: "<", gt: ">", nbsp: " " };
 const decodeHtmlEntities = (text) =>
@@ -95,13 +154,13 @@ const parseListingDetails = (html) => {
     ? Math.round(Number(mileageMatch[1].replace(/,/g, "")) * (mileageMatch[2] ? 1000 : 1))
     : null;
 
-  const transmission = items.find(item => /\b(manual|automatic)\b/i.test(item)) || null;
+  const transmissionRaw = items.find(item => /\b(manual|automatic)\b/i.test(item)) || null;
 
   const ownerMatch = html.match(/<strong>Private Party or Dealer<\/strong>:\s*([^<]+)</);
   const ownerTypeRaw = ownerMatch ? decodeHtmlEntities(ownerMatch[1].trim()) : null;
   const ownerType = ownerTypeRaw === "Private Party" ? "Частное лицо" : ownerTypeRaw === "Dealer" ? "Дилер" : ownerTypeRaw;
 
-  return { vin, mileage, trim: transmission, ownerType };
+  return { vin, mileage, transmission: describeTransmission(transmissionRaw), ownerType };
 };
 
 const CLOSING_SOON_MS = 48 * 3600 * 1000;
@@ -117,15 +176,17 @@ const statusOf = (item, now) => {
 
 const toRareLot = (item, now) => {
   const title = decodeHtmlEntities(item.title);
+  const make = guessMake(title);
 
   return {
     id: `bat-${item.id}`,
     title,
-    make: guessMake(title),
+    make,
+    model: guessModel(title, make),
     source: "Bring a Trailer",
     sourceUrl: item.url,
     mileage: null, // подставляется из lot-details.json после первого разбора страницы лота
-    trim: null,
+    transmission: null,
     vin: null,
     ownerType: null,
     estimateMin: null, // это не наш прогноз, а честная цена BaT — оценки у нас для этих лотов нет
