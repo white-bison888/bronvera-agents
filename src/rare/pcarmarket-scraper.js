@@ -217,7 +217,14 @@ class PcarmarketScraper {
       if (!response || response.status() >= 400)
         throw new Error(`PCARMARKET ответил ${response ? response.status() : "без ответа"}`);
 
-      const html = await page.content();
+      /*
+       * Не page.content(): фреймворк сайта сам вычищает блок с данными
+       * из DOM сразу после гидратации (self.$_TSR удаляется), и к
+       * моменту чтения DOM их там уже нет, хотя они честно пришли в
+       * первом ответе. Берём сырой ответ на сам переход — то, что
+       * прислал сервер, до какой-либо работы клиентского JS.
+       */
+      const html = (await response.body()).toString("utf8");
       await meter.finish();
       return html;
     }
