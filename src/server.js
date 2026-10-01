@@ -27,6 +27,7 @@ const proxyState = require("./providers/proxy-state");
 const DailyScreener = require("./screener/screener");
 const BatScraper = require("./rare/bat-scraper");
 const PcarmarketScraper = require("./rare/pcarmarket-scraper");
+const RmSothebysScraper = require("./rare/rmsothebys-scraper");
 const RareAlerts = require("./rare/alerts");
 const costLedger = require("./costs/ledger");
 const { createDifyUsage, UUID } = require("./costs/dify-usage");
@@ -80,9 +81,11 @@ const rareAlerts = new RareAlerts();
 const rareScraper = new BatScraper({ alerts: rareAlerts });
 // PCARMARKET закрыт Cloudflare для адресов дата-центров — ходим через тот же резидентный прокси, что и bid.cars (решение Mikita 01.10.2026).
 const pcarmarketScraper = new PcarmarketScraper({ alerts: rareAlerts, dataDir: path.join(process.cwd(), "data", "rare", "pcarmarket") });
+const rmSothebysScraper = new RmSothebysScraper({ alerts: rareAlerts, dataDir: path.join(process.cwd(), "data", "rare", "rmsothebys") });
 const rareSources = [
   { id: "bat", scraper: rareScraper },
   { id: "pcarmarket", scraper: pcarmarketScraper },
+  { id: "rm-sothebys", scraper: rmSothebysScraper },
 ];
 
 /*
@@ -1322,4 +1325,5 @@ app.listen(PORT, () => {
   marketChecker.start();
   rareScraper.start();
   pcarmarketScraper.start();
+  rmSothebysScraper.start();
 });
