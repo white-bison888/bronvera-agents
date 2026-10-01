@@ -26,6 +26,7 @@ const { buildVocabulary } = require("./searches/vocabulary");
 const proxyState = require("./providers/proxy-state");
 const DailyScreener = require("./screener/screener");
 const BatScraper = require("./rare/bat-scraper");
+const PcarmarketScraper = require("./rare/pcarmarket-scraper");
 const RareAlerts = require("./rare/alerts");
 const costLedger = require("./costs/ledger");
 const { createDifyUsage, UUID } = require("./costs/dify-usage");
@@ -77,6 +78,12 @@ const screener = new DailyScreener({
 // BRONVERA Rare, Фаза 2 — алерты в Telegram. См. work-plan.md.
 const rareAlerts = new RareAlerts();
 const rareScraper = new BatScraper({ alerts: rareAlerts });
+// PCARMARKET закрыт Cloudflare для адресов дата-центров — ходим через тот же резидентный прокси, что и bid.cars (решение Mikita 01.10.2026).
+const pcarmarketScraper = new PcarmarketScraper({ alerts: rareAlerts, dataDir: path.join(process.cwd(), "data", "rare", "pcarmarket") });
+const rareSources = [
+  { id: "bat", scraper: rareScraper },
+  { id: "pcarmarket", scraper: pcarmarketScraper },
+];
 
 /*
  * Последний поиск помним, чтобы интерфейс мог показать покрытие
@@ -985,23 +992,27 @@ app.get("/api/history/market/:lotNumber", (req, res) => {
 });
 
 /*
- * BRONVERA Rare, Фаза 1 — лоты с Bring a Trailer, обновляются раз в сутки
- * фоновым BatScraper. Отдаём как есть, без пересчёта на каждый запрос —
+ * BRONVERA Rare — лоты со всех подключённых площадок (Фаза 1: Bring a
+ * Trailer, Фаза 3: PCARMARKET), каждая обновляется раз в сутки своим
+ * фоновым скрапером. Отдаём как есть, без пересчёта на каждый запрос —
  * это и есть тот самый «индекс, разобранный один раз», а не на каждый
  * заход (см. aggregator-approach.md).
  */
 app.get("/api/rare/lots", (req, res) => {
-  res.json({ success: true, ...rareScraper.readLots() });
+  const reads = rareSources.map(({ scraper }) => scraper.readLots());
+  const lots = reads.flatMap(r => r.lots);
+  const updatedAt = reads.map(r => r.updatedAt).filter(Boolean).sort().pop() || null;
+
+  res.json({ success: true, updatedAt, count: lots.length, lots });
 });
 
 /*
  * Вкладка Status на сайте (01.10.2026): статус реально подключённых
- * источников. Пока это только Bring a Trailer — остальные площадки
- * из aggregator-approach.md сайт показывает сам как «ещё не подключены»,
- * без записи здесь.
+ * источников. Остальные площадки из aggregator-approach.md сайт
+ * показывает сам как «ещё не подключены», без записи здесь.
  */
 app.get("/api/rare/sources/status", (req, res) => {
-  res.json({ success: true, sources: [{ id: "bat", ...rareScraper.readStatus() }] });
+  res.json({ success: true, sources: rareSources.map(({ id, scraper }) => ({ id, ...scraper.readStatus() })) });
 });
 
 /*
@@ -1047,7 +1058,7 @@ app.get("/api/rare/watch", (req, res) => {
 });
 
 app.post("/api/rare/watch/:lotId", (req, res) => {
-  const lot = rareScraper.readLots().lots.find(item => item.id === req.params.lotId) || null;
+  const lot = rareSources.flatMap(({ scraper }) => scraper.readLots().lots).find(item => item.id === req.params.lotId) || null;
   const map = rareAlerts.setLotWatch(req.params.lotId, Boolean(req.body?.watched), lot);
   res.json({ success: true, lotIds: Object.keys(map) });
 });
@@ -1310,4 +1321,5 @@ app.listen(PORT, () => {
   screener.start();
   marketChecker.start();
   rareScraper.start();
+  pcarmarketScraper.start();
 });

@@ -1,5 +1,6 @@
 const fs = require("fs");
 const path = require("path");
+const { describeTransmission } = require("./transmission");
 
 /*
  * BRONVERA Rare, Фаза 1 (план 30.09.2026): первая реальная площадка —
@@ -87,35 +88,6 @@ const guessModel = (title, make) => {
     words.push(word);
   }
   return words.join(" ") || null;
-};
-
-/*
- * «Five-Speed Manual Transmission», «Six-Speed Manual Transaxle»,
- * «Seven-Speed Dual-Clutch Automatic Transaxle» — у BaT в заголовке
- * пункта, не отдельными полями. Превращаем в короткое «5-ступенчатая
- * механика» вместо сырого английского текста под заголовком
- * «Коробка передач».
- */
-const SPEED_NUMBER_WORDS = { one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10 };
-
-const describeTransmission = (raw) => {
-  if (!raw)
-    return null;
-
-  const speedMatch = raw.match(/\b(one|two|three|four|five|six|seven|eight|nine|ten|\d+)[\s-]*speed/i);
-  const speed = speedMatch ? (SPEED_NUMBER_WORDS[speedMatch[1].toLowerCase()] ?? Number(speedMatch[1])) : null;
-  const isDualClutch = /dual-clutch/i.test(raw);
-  const isAutomatic = !isDualClutch && /automatic/i.test(raw);
-  const isManual = /manual/i.test(raw);
-
-  if (isDualClutch)
-    return speed ? `${speed}-ступенчатый робот (DCT)` : "Робот (DCT)";
-  if (isAutomatic)
-    return speed ? `${speed}-ступенчатый автомат` : "Автомат";
-  if (isManual)
-    return speed ? `${speed}-ступенчатая механика` : "Механика";
-
-  return raw; // тип не распознали — показываем как есть, не выдумываем
 };
 
 // Заголовки у BaT приходят как HTML: "4&#215;4" вместо "4×4", "&amp;" вместо "&".
