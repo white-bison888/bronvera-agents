@@ -146,6 +146,26 @@ test("fetchActiveListings makes a single call when everything fits on the first 
   assert.equal(calls.length, 1);
 });
 
+/*
+ * adtype=cars-for-sale не отсекает автомобилию внутри аукционов (дилерские
+ * таблички, неоновые вывески, часы) — у них единообразно model.slug ===
+ * "other" и model.name === null, а у настоящих машин модель есть всегда.
+ */
+test("fetchActiveListings drops memorabilia/signs/watches masquerading as a make with no real model", async () => {
+  const scraper = new HemmingsScraper({
+    dataDir: tmpDir(),
+    fetchImpl: async () => ({ ok: true, json: async () => searchResponse([
+      listing({ id: 1 }), // настоящая машина — проходит
+      listing({ id: 2, title: "2010 BMW ", long_title: "BMW M Dealership Lighted Sign", model: { name: null, id: null, slug: "other" }, vin: null }),
+      listing({ id: 3, title: "2010 Heuer ", long_title: "Tag Heuer Formula 1 Chronograph", model: { name: null, id: null, slug: "other" }, vin: null }),
+    ]) }),
+    log: () => {},
+  });
+
+  const items = await scraper.fetchActiveListings();
+  assert.deepEqual(items.map(i => i.id), [1]);
+});
+
 test("run() reports only genuinely new lots to alerts.checkAfterRun", async () => {
   const dataDir = tmpDir();
   const calls = [];
