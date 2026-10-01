@@ -204,8 +204,9 @@ class BatScraper {
     dataDir = path.join(process.cwd(), "data", "rare"),
     now = () => Date.now(),
     log = (...args) => console.log(...args),
+    alerts = null, // RareAlerts — необязателен, чтобы тесты и ручные прогоны не требовали Telegram
   } = {}) {
-    Object.assign(this, { fetchImpl, dataDir, now, log });
+    Object.assign(this, { fetchImpl, dataDir, now, log, alerts });
   }
 
   lotsFile() {
@@ -214,6 +215,30 @@ class BatScraper {
 
   detailsFile() {
     return path.join(this.dataDir, "lot-details.json");
+  }
+
+  statusFile() {
+    return path.join(this.dataDir, "status.json");
+  }
+
+  writeStatus(status) {
+    fs.mkdirSync(this.dataDir, { recursive: true });
+    fs.writeFileSync(this.statusFile(), JSON.stringify(status, null, 2));
+  }
+
+  /*
+   * Статус для вкладки Status на сайте (01.10.2026): когда источник в
+   * последний раз прошли, сколько лотов собрали, и текст ошибки, если
+   * не прошли. До первого прогона — ok: null, а не false, чтобы не
+   * путать «ещё не проверяли» с «сломано».
+   */
+  readStatus() {
+    try {
+      return JSON.parse(fs.readFileSync(this.statusFile(), "utf8"));
+    }
+    catch {
+      return { source: "Bring a Trailer", lastRunAt: null, ok: null, count: null, error: null };
+    }
   }
 
   loadDetailsCache() {
@@ -297,25 +322,43 @@ class BatScraper {
 
   async run() {
     const now = this.now();
-    const items = await this.fetchActiveListings();
-    const lots = items
-      .filter(item => !(item.categories || []).some(id => EXCLUDE_CATEGORY_IDS.has(String(id))))
-      .map(item => toRareLot(item, now));
+    // До перезаписи — чтобы потом отличить реально новые лоты от уже виденных (для алертов).
+    const previousIds = new Set(this.readLots().lots.map(lot => lot.id));
 
-    this.log(`BRONVERA Rare: собрано ${lots.length} лотов с Bring a Trailer (из ${items.length} активных объявлений всех категорий)`);
+    try {
+      const items = await this.fetchActiveListings();
+      const lots = items
+        .filter(item => !(item.categories || []).some(id => EXCLUDE_CATEGORY_IDS.has(String(id))))
+        .map(item => toRareLot(item, now));
 
-    const detailsCache = await this.fetchMissingDetails(lots, this.loadDetailsCache());
-    this.saveDetailsCache(detailsCache);
+      this.log(`BRONVERA Rare: собрано ${lots.length} лотов с Bring a Trailer (из ${items.length} активных объявлений всех категорий)`);
 
-    const enriched = lots.map(lot => ({ ...lot, ...(detailsCache[lot.id] || {}) }));
+      const detailsCache = await this.fetchMissingDetails(lots, this.loadDetailsCache());
+      this.saveDetailsCache(detailsCache);
 
-    fs.mkdirSync(this.dataDir, { recursive: true });
-    fs.writeFileSync(
-      this.lotsFile(),
-      JSON.stringify({ updatedAt: new Date(now).toISOString(), source: "Bring a Trailer", count: enriched.length, lots: enriched }, null, 2),
-    );
+      const enriched = lots.map(lot => ({ ...lot, ...(detailsCache[lot.id] || {}) }));
 
-    return enriched;
+      fs.mkdirSync(this.dataDir, { recursive: true });
+      fs.writeFileSync(
+        this.lotsFile(),
+        JSON.stringify({ updatedAt: new Date(now).toISOString(), source: "Bring a Trailer", count: enriched.length, lots: enriched }, null, 2),
+      );
+
+      this.writeStatus({ source: "Bring a Trailer", lastRunAt: new Date(now).toISOString(), ok: true, count: enriched.length, error: null });
+
+      if (this.alerts) {
+        const newLots = enriched.filter(lot => !previousIds.has(lot.id));
+        const allLotsById = new Map(enriched.map(lot => [lot.id, lot]));
+        // Сбой отправки алерта не должен валить весь суточный прогон.
+        await this.alerts.checkAfterRun({ newLots, allLotsById }).catch(error => this.log("BRONVERA Rare: ошибка алертов:", error.message));
+      }
+
+      return enriched;
+    }
+    catch (error) {
+      this.writeStatus({ source: "Bring a Trailer", lastRunAt: new Date(now).toISOString(), ok: false, count: null, error: error.message });
+      throw error;
+    }
   }
 
   readLots() {

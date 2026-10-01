@@ -991,6 +991,16 @@ app.get("/api/rare/lots", (req, res) => {
   res.json({ success: true, ...rareScraper.readLots() });
 });
 
+/*
+ * Вкладка Status на сайте (01.10.2026): статус реально подключённых
+ * источников. Пока это только Bring a Trailer — остальные площадки
+ * из aggregator-approach.md сайт показывает сам как «ещё не подключены»,
+ * без записи здесь.
+ */
+app.get("/api/rare/sources/status", (req, res) => {
+  res.json({ success: true, sources: [{ id: "bat", ...rareScraper.readStatus() }] });
+});
+
 // Сверки цены в Беларуси по всем лотам — цифры без объявлений.
 app.get("/api/market/checks", (req, res) => {
   res.json({ success: true, lots: marketChecker.summary() });
