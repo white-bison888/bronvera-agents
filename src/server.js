@@ -30,6 +30,7 @@ const PcarmarketScraper = require("./rare/pcarmarket-scraper");
 const RmSothebysScraper = require("./rare/rmsothebys-scraper");
 const CarsAndBidsScraper = require("./rare/carsandbids-scraper");
 const HemmingsScraper = require("./rare/hemmings-scraper");
+const CollectingCarsScraper = require("./rare/collectingcars-scraper");
 const RareAlerts = require("./rare/alerts");
 const { buildRareCostSummary } = require("./rare/cost-report");
 const costLedger = require("./costs/ledger");
@@ -89,12 +90,15 @@ const rmSothebysScraper = new RmSothebysScraper({ alerts: rareAlerts, dataDir: p
 const carsAndBidsScraper = new CarsAndBidsScraper({ alerts: rareAlerts, dataDir: path.join(process.cwd(), "data", "rare", "carsandbids") });
 // hemmings.com закрыт тем же Cloudflare, но выдачу отдаёт отдельный api.hemmings.com без этой защиты — ни браузер, ни прокси не нужны.
 const hemmingsScraper = new HemmingsScraper({ alerts: rareAlerts, dataDir: path.join(process.cwd(), "data", "rare", "hemmings") });
+// Collecting Cars закрыт тем же Cloudflare managed-challenge, что PCARMARKET/Cars & Bids, — тот же резидентный прокси.
+const collectingCarsScraper = new CollectingCarsScraper({ alerts: rareAlerts, dataDir: path.join(process.cwd(), "data", "rare", "collectingcars") });
 const rareSources = [
   { id: "bat", scraper: rareScraper },
   { id: "pcarmarket", scraper: pcarmarketScraper },
   { id: "rm-sothebys", scraper: rmSothebysScraper },
   { id: "cars-and-bids", scraper: carsAndBidsScraper },
   { id: "hemmings", scraper: hemmingsScraper },
+  { id: "collecting-cars", scraper: collectingCarsScraper },
 ];
 
 /*
@@ -1342,4 +1346,5 @@ app.listen(PORT, () => {
   rmSothebysScraper.start();
   carsAndBidsScraper.start();
   hemmingsScraper.start();
+  collectingCarsScraper.start();
 });

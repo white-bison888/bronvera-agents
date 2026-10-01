@@ -39,7 +39,7 @@ const guessMake = (title) => {
 const MODEL_STOP_WORDS = new Set([
   "coupe", "sedan", "convertible", "wagon", "hatchback", "roadster", "targa",
   "spyder", "spider", "cabriolet", "pickup", "truck", "suv", "van", "hardtop",
-  "fastback", "liftback", "shooting", "brake", "manual", "automatic",
+  "fastback", "liftback", "shooting", "brake", "estate", "saloon", "manual", "automatic",
   "dual-clutch", "transaxle", "transmission", "gearbox", "awd", "rwd", "fwd",
   "4x4", "4×4", "brougham", "phaeton", "tourer", "limousine",
 ]);
