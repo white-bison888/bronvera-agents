@@ -47,12 +47,28 @@ const photoUrlOf = (photo) => {
   return `https://${photo.base_url}/${photo.path}`;
 };
 
-const statusOf = (closesAt, now) => {
+/*
+ * Баг от Mikita 01.10.2026 (тот же класс, что у BaT): auction_end в
+ * выдаче — расписанное время, а Cars & Bids, как и BaT, продлевает торги
+ * при ставке в последние секунды и явно держит сам лот в статусе "live",
+ * пока не подведёт итог. Проверено на двух настоящих лотах 01.10: время
+ * по расписанию уже прошло, площадка всё ещё отвечает status: "live".
+ * Доверяем статусу площадки, а не только времени — иначе лот помечается
+ * "ended" с цифрой, которая ещё может вырасти. Отдельный заход на
+ * страницу лота за точной ценой закрытия (как у BaT) здесь не делаем —
+ * решено не тратить платный трафик через прокси на то, что и так само
+ * исчезает из выдачи, как только площадка решит.
+ */
+const statusOf = (closesAt, now, rawStatus) => {
+  if (rawStatus && rawStatus !== "live")
+    return "ended";
   if (!closesAt)
     return "open";
   const end = Date.parse(closesAt);
-  if (!Number.isFinite(end) || end <= now)
-    return "ended";
+  if (!Number.isFinite(end))
+    return "open";
+  if (end <= now)
+    return "closing"; // время по расписанию вышло, но площадка ещё не подвела итог
   if (end - now <= CLOSING_SOON_MS)
     return "closing";
   return "open";
@@ -76,9 +92,12 @@ const toRareLot = (item, now) => {
     ownerType: null,
     estimateMin: null, // площадка оценок не даёт, только текущую ставку
     estimateMax: null,
-    currentBid: typeof item.current_bid === "number" ? item.current_bid : null,
+    // sale_amount — настоящая цена сделки (например, Buy It Now обходит
+    // текущую ставку совсем) — приоритетнее current_bid, когда площадка
+    // её уже проставила.
+    currentBid: typeof item.sale_amount === "number" ? item.sale_amount : (typeof item.current_bid === "number" ? item.current_bid : null),
     closesAt,
-    status: statusOf(closesAt, now),
+    status: statusOf(closesAt, now, item.status),
     photoUrl: photoUrlOf(item.main_photo),
   };
 };

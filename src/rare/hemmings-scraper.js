@@ -37,12 +37,24 @@ const parseMoney = (raw) => {
   return match ? Number(match[0].replace(/,/g, "")) : null;
 };
 
-const statusOf = (closesAt, now) => {
+/*
+ * Та же проверка, что сделали для Cars & Bids 01.10.2026 (баг от Mikita):
+ * выдача Hemmings тоже даёт собственное поле status ("live"), а торги
+ * могут продлеваться — расписанное end_date в прошлом само по себе не
+ * значит, что аукцион закрылся. Пока не поймали на Hemmings живого
+ * примера (выдача почти всегда просто убирает закрытые лоты), но
+ * архитектура — те же непрерывные торги с тем же полем, тот же риск.
+ */
+const statusOf = (closesAt, now, rawStatus) => {
+  if (rawStatus && rawStatus !== "live")
+    return "ended";
   if (!closesAt)
     return "open";
   const end = Date.parse(closesAt);
-  if (!Number.isFinite(end) || end <= now)
-    return "ended";
+  if (!Number.isFinite(end))
+    return "open";
+  if (end <= now)
+    return "closing"; // время по расписанию вышло, площадка ещё не подвела итог
   if (end - now <= CLOSING_SOON_MS)
     return "closing";
   return "open";
@@ -66,7 +78,7 @@ const toRareLot = (item, now) => {
     estimateMax: null,
     currentBid: parseMoney(item.current_bid),
     closesAt,
-    status: statusOf(closesAt, now),
+    status: statusOf(closesAt, now, item.status),
     photoUrl: item.thumbnail?.md?.["4:3"] || item.thumbnail?.md?.full || null,
   };
 };

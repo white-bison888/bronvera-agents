@@ -95,7 +95,7 @@ test("run() marks dealer listings as Дилер and private listings as null", a
   fs.rmSync(dataDir, { recursive: true, force: true });
 });
 
-test("run() marks a lot closing within 48h and ended once end_date has passed", async () => {
+test("run() marks a lot closing within 48h, and still closing (not ended) once end_date has passed but the platform still calls it live", async () => {
   const dataDir = tmpDir();
   const soon = new Date(Date.now() + 2 * 3600 * 1000).toISOString();
   const past = new Date(Date.now() - 3600 * 1000).toISOString();
@@ -104,14 +104,34 @@ test("run() marks a lot closing within 48h and ended once end_date has passed", 
     dataDir,
     fetchImpl: async () => ({ ok: true, json: async () => searchResponse([
       listing({ id: 1, end_date: soon }),
-      listing({ id: 2, end_date: past }),
+      listing({ id: 2, end_date: past, status: "live" }),
     ]) }),
     log: () => {},
   });
 
   const lots = await scraper.run();
   assert.equal(lots.find(l => l.id === "hemmings-1").status, "closing");
-  assert.equal(lots.find(l => l.id === "hemmings-2").status, "ended");
+  // Тот же класс бага, что нашли и починили на Cars & Bids 01.10 (баг от
+  // Mikita): расписанное end_date в прошлом не значит, что площадка уже
+  // подвела итог — "ended" здесь показал бы ставку, которая ещё может
+  // вырасти.
+  assert.equal(lots.find(l => l.id === "hemmings-2").status, "closing");
+
+  fs.rmSync(dataDir, { recursive: true, force: true });
+});
+
+test("run() marks a lot ended once the platform itself says so, not just by time", async () => {
+  const dataDir = tmpDir();
+  const past = new Date(Date.now() - 3600 * 1000).toISOString();
+
+  const scraper = new HemmingsScraper({
+    dataDir,
+    fetchImpl: async () => ({ ok: true, json: async () => searchResponse([listing({ end_date: past, status: "sold" })]) }),
+    log: () => {},
+  });
+
+  const [lot] = await scraper.run();
+  assert.equal(lot.status, "ended");
 
   fs.rmSync(dataDir, { recursive: true, force: true });
 });

@@ -133,7 +133,7 @@ test("run() converts kilometers to miles for odometerUnit other than Miles", asy
   fs.rmSync(dataDir, { recursive: true, force: true });
 });
 
-test("run() marks a lot closing within 48h and ended once closesAt has passed", async () => {
+test("run() marks a lot closing within 48h, and still closing (not ended) once closesAt has passed but the platform still calls it open", async () => {
   const dataDir = tmpDir();
   const soon = new Date(Date.now() + 2 * 3600 * 1000).toISOString();
   const past = new Date(Date.now() - 3600 * 1000).toISOString();
@@ -142,14 +142,33 @@ test("run() marks a lot closing within 48h and ended once closesAt has passed", 
     dataDir,
     fetchPage: async () => html({ nodes: [
       vehicleNode({ id: "closing", dates: { closingEnd: soon } }),
-      vehicleNode({ id: "ended", dates: { closingEnd: past } }),
+      vehicleNode({ id: "still-open", dates: { closingEnd: past }, status: "ITEM_OPEN" }),
     ] }),
     log: () => {},
   });
 
   const lots = await scraper.run();
   assert.equal(lots.find(l => l.id === "pcarmarket-closing").status, "closing");
-  assert.equal(lots.find(l => l.id === "pcarmarket-ended").status, "ended");
+  // Тот же класс бага, что нашли и починили на Cars & Bids и Hemmings
+  // 01.10 (баг от Mikita): расписанная closingEnd в прошлом не значит,
+  // что площадка уже подвела итог.
+  assert.equal(lots.find(l => l.id === "pcarmarket-still-open").status, "closing");
+
+  fs.rmSync(dataDir, { recursive: true, force: true });
+});
+
+test("run() marks a lot ended once the platform itself says so, not just by time", async () => {
+  const dataDir = tmpDir();
+  const past = new Date(Date.now() - 3600 * 1000).toISOString();
+
+  const scraper = new PcarmarketScraper({
+    dataDir,
+    fetchPage: async () => html({ nodes: [vehicleNode({ dates: { closingEnd: past }, status: "ITEM_CLOSED" })] }),
+    log: () => {},
+  });
+
+  const [lot] = await scraper.run();
+  assert.equal(lot.status, "ended");
 
   fs.rmSync(dataDir, { recursive: true, force: true });
 });

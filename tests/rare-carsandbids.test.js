@@ -66,7 +66,7 @@ test("run() leaves transmission null for an unrecognised code rather than guessi
   fs.rmSync(dataDir, { recursive: true, force: true });
 });
 
-test("run() marks a lot closing within 48h and ended once auction_end has passed", async () => {
+test("run() marks a lot closing within 48h, and still closing (not ended) once scheduled auction_end has passed but the platform still calls it live", async () => {
   const dataDir = tmpDir();
   const soon = new Date(Date.now() + 2 * 3600 * 1000).toISOString();
   const past = new Date(Date.now() - 3600 * 1000).toISOString();
@@ -75,14 +75,36 @@ test("run() marks a lot closing within 48h and ended once auction_end has passed
     dataDir,
     fetchPage: fetchPageOf([
       auction({ id: "closing", auction_end: soon }),
-      auction({ id: "ended", auction_end: past }),
+      auction({ id: "still-live", auction_end: past, status: "live" }),
     ]),
     log: () => {},
   });
 
   const lots = await scraper.run();
   assert.equal(lots.find(l => l.id === "carsandbids-closing").status, "closing");
-  assert.equal(lots.find(l => l.id === "carsandbids-ended").status, "ended");
+  // Баг от Mikita 01.10 (тот же класс, что у BaT): Cars & Bids продлевает
+  // торги при ставке в последние секунды и держит лот "live", пока не
+  // подведёт итог — расписанное auction_end в прошлом само по себе не
+  // значит, что торги закрылись. Проверено на двух настоящих лотах 01.10:
+  // "ended" здесь показал бы ставку, которая ещё может вырасти.
+  assert.equal(lots.find(l => l.id === "carsandbids-still-live").status, "closing");
+
+  fs.rmSync(dataDir, { recursive: true, force: true });
+});
+
+test("run() marks a lot ended once the platform itself says so, not just by time", async () => {
+  const dataDir = tmpDir();
+  const past = new Date(Date.now() - 3600 * 1000).toISOString();
+
+  const scraper = new CarsAndBidsScraper({
+    dataDir,
+    fetchPage: fetchPageOf([auction({ id: "settled", auction_end: past, status: "sold", sale_amount: 251000 })]),
+    log: () => {},
+  });
+
+  const [lot] = await scraper.run();
+  assert.equal(lot.status, "ended");
+  assert.equal(lot.currentBid, 251000, "sale_amount — настоящая цена сделки (например, Buy It Now обходит current_bid совсем)");
 
   fs.rmSync(dataDir, { recursive: true, force: true });
 });

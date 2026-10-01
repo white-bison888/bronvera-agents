@@ -89,14 +89,29 @@ const milesOf = (value, unit) => {
   return /km\b|kilomet/i.test(unit || "") ? Math.round(value / 1.60934) : Math.round(value);
 };
 
-const statusOf = (closesAt, now) => {
+/*
+ * Та же проверка, что сделали для Cars & Bids и Hemmings 01.10.2026
+ * (баг от Mikita): у PCARMARKET тоже есть собственное поле статуса лота
+ * (status: "ITEM_OPEN" пока торги идут) — расписанная closingEnd в
+ * прошлом сама по себе не значит, что площадка подвела итог. В открытой
+ * выдаче PCARMARKET закрытые лоты пока не замечены вовсе (видимо, сразу
+ * уходят в отдельную /results, которую мы не читаем), но раз архитектура
+ * та же непрерывная лента — доверяем статусу площадки на всякий случай,
+ * как и у остальных.
+ */
+const statusOf = (closesAt, now, rawStatus) => {
+  if (rawStatus && rawStatus !== "ITEM_OPEN")
+    return "ended";
+
   if (!closesAt)
     return "open";
 
   const end = Date.parse(closesAt);
 
-  if (!Number.isFinite(end) || end <= now)
-    return "ended";
+  if (!Number.isFinite(end))
+    return "open";
+  if (end <= now)
+    return "closing"; // время по расписанию вышло, площадка ещё не подвела итог
   if (end - now <= CLOSING_SOON_MS)
     return "closing";
   return "open";
@@ -130,7 +145,7 @@ const toRareLot = (node, now) => {
     estimateMax: estimateOf(node.estimates?.high),
     currentBid: centsToUsd(node.currentBid),
     closesAt,
-    status: statusOf(closesAt, now),
+    status: statusOf(closesAt, now, node.status),
     photoUrl: node.images?.[0]?.url || null,
   };
 };
