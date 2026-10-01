@@ -26,6 +26,7 @@ const { buildVocabulary } = require("./searches/vocabulary");
 const proxyState = require("./providers/proxy-state");
 const DailyScreener = require("./screener/screener");
 const BatScraper = require("./rare/bat-scraper");
+const RareAlerts = require("./rare/alerts");
 const costLedger = require("./costs/ledger");
 const { createDifyUsage, UUID } = require("./costs/dify-usage");
 const { buildPeriodSummary, buildRunCost, minskDay, periodBounds } = require("./costs/report");
@@ -73,7 +74,9 @@ const screener = new DailyScreener({
 });
 
 // BRONVERA Rare, Фаза 1 — первая реальная площадка. См. work-plan.md.
-const rareScraper = new BatScraper();
+// BRONVERA Rare, Фаза 2 — алерты в Telegram. См. work-plan.md.
+const rareAlerts = new RareAlerts();
+const rareScraper = new BatScraper({ alerts: rareAlerts });
 
 /*
  * Последний поиск помним, чтобы интерфейс мог показать покрытие
@@ -999,6 +1002,43 @@ app.get("/api/rare/lots", (req, res) => {
  */
 app.get("/api/rare/sources/status", (req, res) => {
   res.json({ success: true, sources: [{ id: "bat", ...rareScraper.readStatus() }] });
+});
+
+/*
+ * BRONVERA Rare, Фаза 2 (01.10.2026) — алерты в Telegram, один получатель.
+ * Критерии ищут по словам в марке/модели/заголовке лота (не по жёсткому
+ * списку моделей — точного кода шасси вроде «E30» в заголовках BaT часто
+ * просто нет, см. bat-scraper.js). Проверяются на каждом суточном
+ * обновлении BatScraper — против только новых лотов, не всего списка.
+ */
+app.get("/api/rare/watchlist", (req, res) => {
+  res.json({ success: true, items: rareAlerts.readWatchlist() });
+});
+
+app.post("/api/rare/watchlist", (req, res) => {
+  try {
+    const item = rareAlerts.addWatchlistItem(req.body || {});
+    res.json({ success: true, item });
+  }
+  catch (error) {
+    res.status(400).json({ success: false, error: error.message });
+  }
+});
+
+app.delete("/api/rare/watchlist/:id", (req, res) => {
+  const items = rareAlerts.removeWatchlistItem(req.params.id);
+  res.json({ success: true, items });
+});
+
+// Кнопка «Следить за лотом»: какие лоты сейчас отслеживаются (для состояния кнопки при загрузке).
+app.get("/api/rare/watch", (req, res) => {
+  res.json({ success: true, lotIds: Object.keys(rareAlerts.readWatchedLots()) });
+});
+
+app.post("/api/rare/watch/:lotId", (req, res) => {
+  const lot = rareScraper.readLots().lots.find(item => item.id === req.params.lotId) || null;
+  const map = rareAlerts.setLotWatch(req.params.lotId, Boolean(req.body?.watched), lot);
+  res.json({ success: true, lotIds: Object.keys(map) });
 });
 
 // Сверки цены в Беларуси по всем лотам — цифры без объявлений.
