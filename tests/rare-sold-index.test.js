@@ -165,7 +165,10 @@ test("comparables() narrows by trim, body, gearbox, engine, years and mileage, t
 
   const relaxed = index.comparables("me", { minCount: 6 });
   assert.ok(relaxed.relaxed.length > 0); // мало равных — сняли самые слабые признаки и сказали об этом
-  assert.ok(relaxed.count >= 6 || relaxed.criteria.length === 0);
+  assert.ok(relaxed.criteria.includes("Turbo")); // комплектацию не снимаем никогда
+  assert.ok(relaxed.relaxed.includes("близкий пробег") || relaxed.relaxed.some(label => /гг\./.test(label)));
+  assert.equal(relaxed.thin, relaxed.count < 6);
+  assert.ok(relaxed.lots.every(l => /Turbo/.test(String(l.model))) || relaxed.count === 0);
 
   assert.equal(index.comparables("nope"), null);
 });

@@ -174,14 +174,24 @@ class SoldIndex {
       { key: "mileage", label: typeof lot.mileage === "number" ? "близкий пробег" : null, use: typeof lot.mileage === "number", test: o => typeof o.mileage === "number" && mileageBand(o.mileage) === mileageBand(lot.mileage) },
     ].filter(item => item.use);
 
-    let active = criteria;
-    let matches = pool.filter(other => active.every(item => item.test(other)));
+    /*
+     * Поколение и комплектация — ядро позиции: без них это уже другая машина
+     * (997 Turbo и 996 Carrera — разные цены), поэтому их не снимаем никогда,
+     * даже если совпадений мало. Остальные признаки снимаем по одному с конца
+     * (пробег, годы, двигатель, коробка, кузов), пока не наберётся minCount.
+     */
+    const core = criteria.filter(item => item.key === "generation" || item.key === "trim");
+    const soft = criteria.filter(item => item.key !== "generation" && item.key !== "trim");
+    let activeSoft = soft;
+    const matchFor = list => pool.filter(other => [...core, ...list].every(item => item.test(other)));
+    let matches = matchFor(activeSoft);
     const dropped = [];
-    while (matches.length < minCount && active.length > 0) {
-      dropped.push(active[active.length - 1]);
-      active = active.slice(0, -1);
-      matches = pool.filter(other => active.every(item => item.test(other)));
+    while (matches.length < minCount && activeSoft.length > 0) {
+      dropped.push(activeSoft[activeSoft.length - 1]);
+      activeSoft = activeSoft.slice(0, -1);
+      matches = matchFor(activeSoft);
     }
+    const active = [...core, ...activeSoft];
 
     const prices = matches.map(other => other.salePrice).sort((a, b) => a - b);
     const at = q => (prices.length ? prices[Math.min(prices.length - 1, Math.floor((prices.length - 1) * q))] : null);
@@ -191,6 +201,7 @@ class SoldIndex {
       criteria: active.map(item => item.label),
       relaxed: dropped.map(item => item.label),
       count: matches.length,
+      thin: matches.length < minCount,
       median: at(0.5),
       low: at(0.25),
       high: at(0.75),
