@@ -2,6 +2,8 @@ const fs = require("fs");
 const path = require("path");
 const { loadSoldArchive, readSoldArchiveCached, saveSoldArchive, soldArchiveLocked, yearFromTitle } = require("./sold-archive");
 const { parseVehicleAttributes } = require("./sold-attrs");
+const { classifyVin } = require("./sold-fields");
+const { applyPatch } = require("./sold-pages");
 
 /*
  * BRONVERA Rare, Фаза 3 (01.10.2026): пятая площадка — Hemmings
@@ -117,6 +119,7 @@ const toSoldLot = item => ({
   transmission: null,
   conditionFacts: [],
   ...parseVehicleAttributes(`${item.long_title || ""} ${item.title || ""}`),
+  ...classifyVin(item.vin),
   photoUrl: item.thumbnail?.md?.["4:3"] || item.thumbnail?.md?.full || null,
 });
 
@@ -267,6 +270,7 @@ class HemmingsScraper {
   async updateSoldArchive({ maxPages = SOLD_MAX_PAGES, stopWhenKnown = true } = {}) {
     const archive = loadSoldArchive(this.soldFile());
     let added = 0;
+    let enrichedVin = 0;
 
     for (let page = 1; page <= maxPages; page += 1) {
       const items = await this.fetchSoldPage(page);
@@ -281,6 +285,9 @@ class HemmingsScraper {
         if (!archive[soldLot.id]) {
           archive[soldLot.id] = soldLot;
           newOnPage += 1;
+        }
+        else if (applyPatch(archive[soldLot.id], { vin: soldLot.vin, chassis: soldLot.chassis }) > 0) {
+          enrichedVin += 1;
         }
       }
 
@@ -302,7 +309,7 @@ class HemmingsScraper {
       }
     }
 
-    if (added > 0 || marked > 0) {
+    if (added > 0 || marked > 0 || enrichedVin > 0) {
       saveSoldArchive(this.soldFile(), archive);
       this.log(`BRONVERA Rare: добавил ${added} проданных лотов Hemmings в архив (всего ${Object.keys(archive).length})`);
     }

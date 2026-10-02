@@ -86,3 +86,14 @@ test("parseRmText takes colour, mileage in miles or kilometres and the gearbox f
   assert.equal(loose.exteriorColor, "Azzurro");
   assert.equal(parseRmText("A fine car.").exteriorColor, null);
 });
+
+test("classifyVin tells a real 17-character VIN from an old chassis number", () => {
+  const { classifyVin } = require("../src/rare/sold-fields");
+  assert.deepEqual(classifyVin("WP0CD2A94RS257786"), { vin: "WP0CD2A94RS257786" });
+  assert.deepEqual(classifyVin(" wp0cd2a94rs257786 "), { vin: "WP0CD2A94RS257786" });
+  assert.deepEqual(classifyVin("164877D153201"), { chassis: "164877D153201" });
+  assert.deepEqual(classifyVin("2955 GT"), { chassis: "2955 GT" });
+  assert.deepEqual(classifyVin("WP0CD2A94RS25778I"), { chassis: "WP0CD2A94RS25778I" }); // «I» в VIN не бывает
+  assert.deepEqual(classifyVin(""), {});
+  assert.deepEqual(classifyVin("N/A"), {});
+});

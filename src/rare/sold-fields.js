@@ -183,4 +183,18 @@ const parseRmText = (text) => {
   return { exteriorColor, mileage, transmissionRaw: trans ? trans[1] : null };
 };
 
-module.exports = { cleanColor, parseRmText, colorGroupOf, decodeEntities, parseBatExcerpt, parseMileageText, toMiles, transmissionKind };
+/*
+ * VIN или номер шасси. Настоящий VIN — ровно 17 знаков без I, O, Q (стандарт с 1981 года);
+ * всё остальное («164877D153201», «2955 GT», «B1LB136697») — номер шасси старой машины,
+ * по нему можно узнать одну и ту же машину при перепродаже, но нельзя расшифровать.
+ */
+const VIN_17 = /^[A-HJ-NPR-Z0-9]{17}$/;
+
+const classifyVin = (raw) => {
+  const text = String(raw || "").replace(/[\s-]+/g, "").toUpperCase();
+  if (!text || text.length < 4 || /^(N\/?A|NONE|UNKNOWN|TBD)$/.test(text))
+    return {};
+  return VIN_17.test(text) ? { vin: text } : { chassis: String(raw).trim().slice(0, 40) };
+};
+
+module.exports = { classifyVin, cleanColor, parseRmText, colorGroupOf, decodeEntities, parseBatExcerpt, parseMileageText, toMiles, transmissionKind };

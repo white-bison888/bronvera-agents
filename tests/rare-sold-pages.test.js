@@ -71,6 +71,7 @@ test("BaT sold page: mileage, paint, interior, engine, drivetrain and equipment 
     "Burmester Sound System",
   ]), { title: "2024 Porsche 911 Turbo S Cabriolet" });
 
+  assert.equal(found.vin, "WP0CD2A94RS257786");
   assert.equal(found.mileage, 4900);
   assert.equal(found.exteriorColor, "Guards Red");
   assert.equal(found.colorGroup, "Красный");
@@ -117,6 +118,7 @@ test("BaT enrichSoldFromPages fills the archive from lot pages, most expensive f
 
 const rmPage = ({ bullets = [], essay = "", related = "" } = {}) => `<html><body>
   <nav>Menu Cabriolet Spyder</nav>
+  <div class="idlabel">Chassis No.</div><div class="iddata">2955 GT</div>
   <ul class="list-bullets ff-adapt">${bullets.map(b => `<li>${b}</li>`).join("")}</ul>
   <section class="container container--vw lotdescription"><div class="body-text--copy"><p>${essay}</p></div></section>
   <h3>You may also like:</h3><p>${related}</p>
@@ -131,6 +133,7 @@ test("RM lot page: colour, mileage, gearbox and engine from the lot's own text, 
 
   assert.equal(found.exteriorColor, "Rosso Corsa");
   assert.equal(found.colorGroup, "Красный");
+  assert.equal(found.chassis, "2955 GT");
   assert.equal(found.mileage, 31000);
   assert.equal(found.transmissionKind, "manual");
   assert.equal(found.cylinders, 12);

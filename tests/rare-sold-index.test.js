@@ -44,7 +44,7 @@ test("points() returns compact rows with dictionaries instead of repeated string
 
   const { fields, dict, rows } = index.points();
 
-  assert.deepEqual(fields, ["id", "soldAt", "salePrice", "source", "make", "model", "year", "mileage", "transmission", "color", "sold", "body", "engine", "drive", "trim", "generation"]);
+  assert.deepEqual(fields, ["id", "soldAt", "salePrice", "source", "make", "model", "year", "mileage", "transmission", "color", "sold", "body", "engine", "drive", "trim", "generation", "resale"]);
   assert.deepEqual(dict.model.sort(), ["911", "Cayman"]);
   assert.equal(rows.length, 2);
 
@@ -171,4 +171,31 @@ test("comparables() narrows by trim, body, gearbox, engine, years and mileage, t
   assert.ok(relaxed.lots.every(l => /Turbo/.test(String(l.model))) || relaxed.count === 0);
 
   assert.equal(index.comparables("nope"), null);
+});
+
+test("the same car sold more than once is grouped by VIN (or chassis number + make) and its history is returned oldest first", () => {
+  const dir = tmpDir();
+  const index = new SoldIndex([fakeScraper(dir, "a", [
+    lot("v1", { vin: "WP0CD2A94RS257786", soldAt: "2022-03-01T00:00:00.000Z", salePrice: 150000 }),
+    lot("v2", { vin: "WP0CD2A94RS257786", soldAt: "2025-05-01T00:00:00.000Z", salePrice: 190000, source: "RM Sotheby's" }),
+    lot("other", { vin: "WP0CD2A94RS999999" }),
+    lot("c1", { chassis: "164877D153201", make: "Chevrolet", soldAt: "2020-01-01T00:00:00.000Z" }),
+    lot("c2", { chassis: "164877d 153201", make: "Chevrolet", soldAt: "2024-01-01T00:00:00.000Z" }),
+    lot("c3", { chassis: "164877D153201", make: "Ford", soldAt: "2023-01-01T00:00:00.000Z" }), // тот же номер, другая марка — другая машина
+    lot("short", { chassis: "A1" }),
+    lot("short2", { chassis: "A1" }),
+  ])]);
+
+  assert.deepEqual(index.history("v2").map(l => l.id), ["v1", "v2"]);
+  assert.deepEqual(index.history("v1").map(l => l.id), ["v1", "v2"]);
+  assert.deepEqual(index.history("c2").map(l => l.id), ["c1", "c2"]);
+  assert.deepEqual(index.history("other"), []);
+  assert.deepEqual(index.history("c3"), []);
+  assert.deepEqual(index.history("short"), []); // номер из двух знаков машину не определяет
+
+  const { rows } = index.points();
+  const byId = Object.fromEntries(rows.map(row => [row[0], row]));
+  assert.equal(byId.v1[15 + 1], byId.v2[16]);
+  assert.ok(byId.v1[16] >= 0);
+  assert.equal(byId.other[16], -1);
 });

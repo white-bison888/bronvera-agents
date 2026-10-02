@@ -4,7 +4,7 @@ const vm = require("vm");
 const { applyLiteBrowsing } = require("../providers/lite-browsing");
 const { meterBrowserContext } = require("../costs/ledger");
 const { describeTransmission } = require("./transmission");
-const { colorGroupOf, transmissionKind } = require("./sold-fields");
+const { classifyVin, colorGroupOf, transmissionKind } = require("./sold-fields");
 const { parseVehicleAttributes } = require("./sold-attrs");
 const { loadSoldArchive, readSoldArchiveCached, saveSoldArchive, soldArchiveLocked, yearFromTitle } = require("./sold-archive");
 
@@ -172,6 +172,7 @@ const toSoldLot = node => ({
   exteriorColor: String(node.schema?.data?.exteriorColor || "").trim() || null,
   colorGroup: colorGroupOf(node.schema?.data?.exteriorColor),
   ...parseVehicleAttributes(node.title, node.schema?.data?.originalEngineAndTransmission),
+  ...classifyVin(node.schema?.data?.vin),
   conditionFacts: [],
   photoUrl: node.images?.[0]?.url || null,
 });

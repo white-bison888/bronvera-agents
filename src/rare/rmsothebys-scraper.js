@@ -5,7 +5,7 @@ const { loadSoldArchive, readSoldArchiveCached, saveSoldArchive, soldArchiveLock
 const { FxRates, reconvertArchive } = require("./fx");
 const { bodyStyleOf, parseVehicleAttributes } = require("./sold-attrs");
 const { enrichFromPages } = require("./sold-pages");
-const { colorGroupOf, decodeEntities, parseRmText, transmissionKind } = require("./sold-fields");
+const { classifyVin, colorGroupOf, decodeEntities, parseRmText, transmissionKind } = require("./sold-fields");
 const { describeTransmission } = require("./transmission");
 
 /*
@@ -180,13 +180,15 @@ const textOfPage = (html) => {
 
 const parseRmLotPage = (html, lot = {}) => {
   const text = textOfPage(html);
+  const chassis = classifyVin(parseChassis(html));
   if (!text)
-    return {};
+    return chassis;
   const found = parseRmText(text);
   const attrs = parseVehicleAttributes(lot.title, text);
   const bodyStyle = bodyStyleOf(lot.title); // кузов — только по названию лота: в очерке упоминаются и другие модели
   delete attrs.bodyStyle;
   return {
+    ...chassis,
     mileage: found.mileage,
     exteriorColor: found.exteriorColor,
     colorGroup: colorGroupOf(found.exteriorColor),

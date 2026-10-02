@@ -22,7 +22,7 @@ const { buildFamilyResolver } = require("./model-family");
  * остаток названия — комплектация — идёт отдельной колонкой trim (см.
  * model-family.js). Новые колонки только в конце.
  */
-const POINT_FIELDS = ["id", "soldAt", "salePrice", "source", "make", "model", "year", "mileage", "transmission", "color", "sold", "body", "engine", "drive", "trim", "generation"];
+const POINT_FIELDS = ["id", "soldAt", "salePrice", "source", "make", "model", "year", "mileage", "transmission", "color", "sold", "body", "engine", "drive", "trim", "generation", "resale"];
 const TRANSMISSION_CODES = { manual: 1, automatic: 2 };
 
 /* Всё, что страница ждёт от лота, — с пустыми значениями по умолчанию (старые записи архива их не имеют). */
@@ -41,6 +41,21 @@ const fullLot = lot => ({
   sold: null,
   ...lot,
 });
+
+/*
+ * Ключ «одной и той же машины» для отслеживания перепродаж: настоящий VIN либо
+ * номер шасси вместе с маркой (у старых машин VIN нет, но номер шасси уникален
+ * внутри марки). Слишком короткие и пустые номера не берём — по ним нельзя
+ * отличить одну машину от другой.
+ */
+const resaleKeyOf = (lot) => {
+  if (lot.vin)
+    return `vin:${lot.vin}`;
+  const chassis = String(lot.chassis || "").replace(/[\s-]+/g, "").toUpperCase();
+  if (chassis.length >= 6 && /\d/.test(chassis) && lot.make)
+    return `ch:${String(lot.make).toLowerCase()}:${chassis}`;
+  return null;
+};
 
 const signatureOf = (files) => {
   return files.map((file) => {
@@ -76,6 +91,30 @@ class SoldIndex {
     this.lots = lots;
     this.byId = new Map(lots.map(lot => [lot.id, lot]));
     this.resolveFamily = buildFamilyResolver(lots);
+
+    // Группы одной и той же машины, проданной не раз: id лота → номер группы.
+    const byKey = new Map();
+    for (const lot of lots) {
+      const key = resaleKeyOf(lot);
+      if (!key)
+        continue;
+      const list = byKey.get(key);
+      if (list)
+        list.push(lot);
+      else
+        byKey.set(key, [lot]);
+    }
+    this.resaleGroups = [];
+    this.resaleOf = new Map();
+    for (const group of byKey.values()) {
+      if (group.length < 2)
+        continue;
+      const index = this.resaleGroups.length;
+      this.resaleGroups.push(group.sort((a, b) => Date.parse(a.soldAt) - Date.parse(b.soldAt)));
+      for (const lot of group)
+        this.resaleOf.set(lot.id, index);
+    }
+
     this.signature = signature;
   }
 
@@ -124,6 +163,7 @@ class SoldIndex {
         code("drive", lot.drivetrain),
         code("trim", lot.trimName || trim),
         code("generation", lot.generation || generation),
+        this.resaleOf.has(lot.id) ? this.resaleOf.get(lot.id) : -1,
       ]);
     }
 
@@ -207,6 +247,15 @@ class SoldIndex {
       high: at(0.75),
       lots: matches.slice(0, listSize).map(fullLot),
     };
+  }
+
+  /* Все продажи этой же машины (по VIN или номеру шасси), от старых к новым; пусто, если она продавалась один раз. */
+  history(id) {
+    this.refresh();
+    const index = this.resaleOf.get(id);
+    if (index === undefined)
+      return [];
+    return this.resaleGroups[index].map(fullLot);
   }
 
   lot(id) {

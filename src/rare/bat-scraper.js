@@ -4,7 +4,7 @@ const { describeTransmission } = require("./transmission");
 const { guessMake, guessModel } = require("./title-parser");
 const { loadSoldArchive, readSoldArchiveCached, saveSoldArchive, soldArchiveLocked, yearFromTitle } = require("./sold-archive");
 const { FxRates } = require("./fx");
-const { colorGroupOf, decodeEntities: decodeBatEntities, parseBatExcerpt, transmissionKind } = require("./sold-fields");
+const { classifyVin, colorGroupOf, decodeEntities: decodeBatEntities, parseBatExcerpt, transmissionKind } = require("./sold-fields");
 const { fillAttributes, parseVehicleAttributes } = require("./sold-attrs");
 const { enrichFromPages } = require("./sold-pages");
 
@@ -134,8 +134,10 @@ const parseSoldPage = (html, lot = {}) => {
   }
 
   const attrs = parseVehicleAttributes(lot.title, items.join(". "));
+  const vinItem = items.find(item => /^(Chassis|VIN):/i.test(item));
 
   return {
+    ...(vinItem ? classifyVin(vinItem.replace(/^(Chassis|VIN):\s*/i, "")) : {}),
     mileage,
     transmission: describeTransmission(transmissionItem),
     transmissionKind: transmissionKind(transmissionItem),
