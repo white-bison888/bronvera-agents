@@ -157,7 +157,8 @@ const steeringOf = (...texts) => {
  * «один из N», лимитированная). Малый пробег считается отдельно по пробегу и возрасту.
  */
 const FLAG_RULES = [
-  ["modified", /(?<!un)(?<!non-)\b(modified|restomod|resto-mod|customi[sz]ed|custom[- ]built|custom|replica|recreation|tribute|kit car|re-?bodied|backdated|outlaw|hot rod|pro[- ]touring|[a-z0-9]+[- ]swapped|engine[- ]swap(?:ped)?|[a-z]{2}\d[- ]swap|conversion|converted)\b/i],
+  // «Custom» без уточнения — заводская комплектация у Ford, Packard, Pontiac, Hudson и др., а не доработка, поэтому слово само по себе не считаем.
+  ["modified", /(?<!un)(?<!non-)\b(modified|restomod|resto-mod|customi[sz]ed|custom[- ]built|custom[- ]modified|replica|recreation|tribute|kit car|re-?bodied|backdated|outlaw|hot rod|pro[- ]touring|[a-z0-9]+[- ]swapped|engine[- ]swap(?:ped)?|[a-z]{2}\d[- ]swap|conversion|converted)\b/i],
   ["project", /\b(project|non-running|not running|needs restoration|for restoration|parts car|salvage title|rebuilt title)\b/i],
   ["unrestored", /\b(unrestored|survivor|original[- ]paint|preservation|time[- ]capsule|barn[- ]find)\b/i],
   ["restored", /\b(restored|restoration|concours|frame-off|nut-and-bolt|ground-up)\b/i],

@@ -108,6 +108,9 @@ test("flagsOf finds the features that move the price: modified, project, origina
   assert.deepEqual(flagsOf("1991 Honda NSX Survivor"), ["unrestored"]);
   assert.deepEqual(flagsOf("1964 Jaguar E-Type", "Fully restored in 2019, concours quality"), ["restored"]);
   assert.deepEqual(flagsOf("2005 Porsche 911 GT3", "one of 15 examples, paint-to-sample Irish Green"), ["special"]);
+  assert.deepEqual(flagsOf("1947 Packard Custom Super Clipper Seven-Passenger Sedan by Henney"), []); // Custom — заводская комплектация
+  assert.deepEqual(flagsOf("1936 Ford Custom Three-Window"), []);
+  assert.deepEqual(flagsOf("1969 Dodge Charger Custom-Built Pro-Touring"), ["modified"]);
   assert.deepEqual(flagsOf("Unmodified 1995 Mazda RX-7"), []); // «un-» и «non-» не считаются доработкой
   assert.deepEqual(flagsOf("1995 Mazda RX-7", "a non-modified example"), []);
   assert.deepEqual(flagsOf("1967 Corvette", "unrestored survivor, not a restoration"), ["unrestored"]);
