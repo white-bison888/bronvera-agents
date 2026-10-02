@@ -1045,6 +1045,12 @@ app.get("/api/rare/sold", (req, res) => {
     .flatMap(({ scraper }) => scraper.readSold())
     .sort((a, b) => new Date(b.soldAt || 0) - new Date(a.soldAt || 0));
 
+  // Одна запись по id — для страницы проданного лота: она может быть старше окна, которое видит список.
+  if (req.query.id) {
+    const lot = all.find(item => item.id === String(req.query.id));
+    return res.json({ success: true, count: lot ? 1 : 0, total: all.length, lots: lot ? [lot] : [] });
+  }
+
   const sinceParam = Date.parse(String(req.query.since || ""));
   const since = req.query.all === "1" ? 0 : (Number.isFinite(sinceParam) ? sinceParam : Date.now() - SOLD_DEFAULT_WINDOW_MS);
   const untilParam = Date.parse(String(req.query.until || ""));
