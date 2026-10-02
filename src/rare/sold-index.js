@@ -1,5 +1,5 @@
 const fs = require("fs");
-const { engineLabel, isLowMileage } = require("./sold-attrs");
+const { engineLabel, flagsOf, isLowMileage } = require("./sold-attrs");
 const { buildFamilyResolver } = require("./model-family");
 
 /*
@@ -132,6 +132,16 @@ class SoldIndex {
       .flatMap(scraper => scraper.readSold())
       .filter(lot => lot && lot.soldAt && typeof lot.salePrice === "number")
       .sort((a, b) => Date.parse(b.soldAt) - Date.parse(a.soldAt));
+
+    // Особенности по названию — для лотов, у которых архив их ещё не посчитал (например, Bring a Trailer, пока идёт
+    // добор страниц и архив занят). Объекты лежат в кэше чтения, на сами файлы это не влияет.
+    for (const lot of lots) {
+      if (!Array.isArray(lot.flags)) {
+        const found = flagsOf(lot.title);
+        if (found.length)
+          lot.flags = found;
+      }
+    }
 
     this.lots = lots;
     this.byId = new Map(lots.map(lot => [lot.id, lot]));

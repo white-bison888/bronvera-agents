@@ -281,3 +281,13 @@ test("comparables() returns nothing to compare when the car has no model line", 
   assert.deepEqual(comps.lots, []);
   assert.equal(index.comparables("nope"), null);
 });
+
+test("flags are derived from the title for lots whose archive has not computed them yet", () => {
+  const index = new SoldIndex([fakeScraper(tmpDir(), "a", [
+    lot("late", { title: "Modified 1996 Porsche 911 Carrera", flags: undefined }),
+    lot("stored", { title: "Modified 1996 Porsche 911 Carrera", flags: ["special"] }),
+  ])]);
+  const byId = Object.fromEntries(index.points().rows.map(r => [r[0], r]));
+  assert.equal(byId.late[17] & 1, 1);
+  assert.equal(byId.stored[17] & 1, 0); // уже посчитанное архивом не пересчитываем
+});
