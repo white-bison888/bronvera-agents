@@ -1032,8 +1032,10 @@ app.get("/api/rare/lots", (req, res) => {
 /*
  * Архивы копятся с первого дня (у RM Sotheby's — с 2003 года, больше 10 тысяч
  * лотов, ~10 МБ), а вкладке Stats столько сразу не нужно. По умолчанию
- * отдаём последние два года; ?since=ГГГГ-ММ-ДД меняет границу, ?all=1 —
- * вообще всё. Поле total — сколько лотов в архиве целиком.
+ * отдаём последние два года; ?since=ГГГГ-ММ-ДД меняет нижнюю границу,
+ * ?until=ГГГГ-ММ-ДД ставит верхнюю (не включая её), ?all=1 — вообще всё.
+ * Сайт грузит «весь архив» кусками по годам: ответ через Vercel не может
+ * быть больше ~4,5 МБ. Поле total — сколько лотов в архиве целиком.
  */
 const SOLD_DEFAULT_WINDOW_MS = 730 * 24 * 3600 * 1000;
 
@@ -1045,7 +1047,12 @@ app.get("/api/rare/sold", (req, res) => {
 
   const sinceParam = Date.parse(String(req.query.since || ""));
   const since = req.query.all === "1" ? 0 : (Number.isFinite(sinceParam) ? sinceParam : Date.now() - SOLD_DEFAULT_WINDOW_MS);
-  const sold = all.filter(lot => Date.parse(lot.soldAt || 0) >= since);
+  const untilParam = Date.parse(String(req.query.until || ""));
+  const until = Number.isFinite(untilParam) ? untilParam : Infinity;
+  const sold = all.filter((lot) => {
+    const at = Date.parse(lot.soldAt || 0);
+    return at >= since && at < until;
+  });
 
   res.json({ success: true, count: sold.length, total: all.length, lots: sold });
 });

@@ -19,6 +19,28 @@ const loadSoldArchive = (file) => {
   }
 };
 
+/*
+ * Чтение для сайта: /api/rare/sold дёргают несколько раз подряд (период
+ * «весь архив» грузится кусками), а файл у RM Sotheby's ~8 МБ — не разбираем
+ * его заново на каждый запрос, пока файл не менялся. Изменять результат нельзя.
+ */
+const readCache = new Map();
+
+const readSoldArchiveCached = (file) => {
+  try {
+    const { mtimeMs, size } = fs.statSync(file);
+    const hit = readCache.get(file);
+    if (hit && hit.mtimeMs === mtimeMs && hit.size === size)
+      return hit.archive;
+    const archive = loadSoldArchive(file);
+    readCache.set(file, { mtimeMs, size, archive });
+    return archive;
+  }
+  catch {
+    return {};
+  }
+};
+
 const saveSoldArchive = (file, archive) => {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, JSON.stringify(archive, null, 2));
@@ -30,4 +52,4 @@ const yearFromTitle = (title) => {
   return match ? Number(match[0]) : null;
 };
 
-module.exports = { loadSoldArchive, saveSoldArchive, yearFromTitle };
+module.exports = { loadSoldArchive, readSoldArchiveCached, saveSoldArchive, yearFromTitle };

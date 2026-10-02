@@ -1,7 +1,8 @@
 const fs = require("fs");
 const path = require("path");
 const { guessMake, guessModel } = require("./title-parser");
-const { loadSoldArchive, saveSoldArchive, yearFromTitle } = require("./sold-archive");
+const { loadSoldArchive, readSoldArchiveCached, saveSoldArchive, yearFromTitle } = require("./sold-archive");
+const { FxRates, reconvertArchive } = require("./fx");
 
 /*
  * BRONVERA Rare, Фаза 3 (01.10.2026): третья площадка — RM Sotheby's.
@@ -76,10 +77,9 @@ const statusOf = (closesAt, now) => {
  * не архивируем; у закрытых (Sealed) торгов цена не публикуется вовсе. Цена RM
  * включает комиссию покупателя — у части других площадок (например, Bring a
  * Trailer) «Sold for» это цена молотка без неё, прямо сравнивать осторожно.
- * Курс фиксированный на 01.10.2026, как у Collecting Cars; исходную цену и
- * валюту храним рядом.
+ * В архиве храним исходную цену и валюту (salePriceLocal + currency), а
+ * salePrice в USD считаем по курсу ЕЦБ на день продажи (см. fx.js).
  */
-const FX_TO_USD = { USD: 1, GBP: 1.32338, EUR: 1.12979, CHF: 1.1972 };
 const CURRENCY_BY_SYMBOL = { "$": "USD", "£": "GBP", "€": "EUR", "CHF": "CHF" };
 
 const parseSoldValue = (value) => {
@@ -115,7 +115,7 @@ const toSoldLot = (item, endDate, code) => {
     source: "RM Sotheby's",
     sourceUrl: item.link,
     soldAt: `${endDate}T00:00:00.000Z`, // у каждого лота своей даты нет — день окончания аукциона
-    salePrice: Math.round(price.amount * FX_TO_USD[price.currency]),
+    salePrice: null, // подставляется по курсу на день продажи
     salePriceLocal: price.amount,
     currency: price.currency,
     auctionCode: code,
@@ -160,8 +160,9 @@ class RmSothebysScraper {
     now = () => Date.now(),
     log = (...args) => console.log(...args),
     alerts = null,
+    fx = new FxRates({ file: path.join(dataDir, "..", "fx-rates.json") }),
   } = {}) {
-    Object.assign(this, { fetchImpl, dataDir, now, log, alerts });
+    Object.assign(this, { fetchImpl, dataDir, now, log, alerts, fx });
   }
 
   lotsFile() {
@@ -181,7 +182,7 @@ class RmSothebysScraper {
   }
 
   readSold() {
-    return Object.values(loadSoldArchive(this.soldFile()));
+    return Object.values(readSoldArchiveCached(this.soldFile()));
   }
 
   statusFile() {
@@ -409,13 +410,28 @@ class RmSothebysScraper {
         const closesAt = await this.fetchAuctionClosesAt(code); // и у аукциона без машин — иначе пустой ответ «закрыл» бы свежие торги навсегда
         const endDate = closesAt ? closesAt.slice(0, 10) : null;
 
+        let skippedForFx = 0;
+
         for (const item of items) {
           const soldLot = toSoldLot(item, endDate, code);
-          if (soldLot && !archive[soldLot.id]) {
-            archive[soldLot.id] = soldLot;
-            added += 1;
+          if (!soldLot || archive[soldLot.id])
+            continue;
+          try {
+            Object.assign(soldLot, await this.fx.convert(soldLot.salePriceLocal, soldLot.currency, soldLot.soldAt));
           }
+          catch (error) {
+            skippedForFx += 1;
+            if (skippedForFx === 1)
+              this.log(`BRONVERA Rare: не пересчитал цены RM Sotheby's ${code} по курсу на дату продажи: ${error.message}`);
+            continue;
+          }
+          archive[soldLot.id] = soldLot;
+          added += 1;
         }
+
+        // Курса не было — аукцион не «закрываем», чтобы вернуться к нему в следующий заход.
+        if (skippedForFx > 0)
+          continue;
 
         auctions[code] = { endDate, checkedAt: new Date(now).toISOString() };
       }
@@ -430,7 +446,9 @@ class RmSothebysScraper {
     fs.mkdirSync(this.dataDir, { recursive: true });
     fs.writeFileSync(this.soldAuctionsFile(), JSON.stringify(auctions, null, 2));
 
-    if (added > 0) {
+    const reconverted = await reconvertArchive(archive, this.fx, this.log);
+
+    if (added > 0 || reconverted > 0) {
       saveSoldArchive(this.soldFile(), archive);
       this.log(`BRONVERA Rare: добавил ${added} проданных лотов RM Sotheby's в архив (всего ${Object.keys(archive).length})`);
     }

@@ -1,6 +1,6 @@
 const fs = require("fs");
 const path = require("path");
-const { loadSoldArchive, saveSoldArchive, yearFromTitle } = require("./sold-archive");
+const { loadSoldArchive, readSoldArchiveCached, saveSoldArchive, yearFromTitle } = require("./sold-archive");
 
 /*
  * BRONVERA Rare, Фаза 3 (01.10.2026): пятая площадка — Hemmings
@@ -138,7 +138,7 @@ class HemmingsScraper {
   }
 
   readSold() {
-    return Object.values(loadSoldArchive(this.soldFile()));
+    return Object.values(readSoldArchiveCached(this.soldFile()));
   }
 
   statusFile() {

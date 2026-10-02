@@ -6,6 +6,19 @@ const path = require("node:path");
 
 const RmSothebysScraper = require("../src/rare/rmsothebys-scraper");
 
+// Курсы на день продажи в тестах — свои, чтобы не ходить в сеть: фунт = 2, евро = 1.5, франк = 1.2, австралийский доллар = 0.5.
+const FAKE_RATES = { USD: 1, GBP: 2, EUR: 1.5, CHF: 1.2, AUD: 0.5, NZD: 0.4 };
+const fakeFx = {
+  calls: [],
+  async convert(amount, currency, soldAt) {
+    this.calls.push({ amount, currency, soldAt });
+    const rate = FAKE_RATES[currency];
+    if (!rate)
+      throw new Error(`нет курса ${currency}`);
+    return { salePrice: Math.round(amount * rate), fxRate: rate, fxDate: String(soldAt).slice(0, 10) };
+  },
+};
+
 const tmpDir = () => fs.mkdtempSync(path.join(os.tmpdir(), "bronvera-rare-rmsothebys-"));
 
 const upcomingHtml = codes => `<html><body>${codes.map(c => `<a href="/auctions/${c}/lots/">${c}</a>`).join("")}</body></html>`;
@@ -61,7 +74,7 @@ const stubFetch = ({ codes = ["hf26"], itemsByCode = {}, closesAtByCode = {}, de
 };
 
 test("fetchUpcomingAuctionCodes reads codes from /upcoming/, deduplicated", async () => {
-  const scraper = new RmSothebysScraper({
+  const scraper = new RmSothebysScraper({ fx: fakeFx,
     dataDir: tmpDir(),
     fetchImpl: stubFetch({ codes: ["hf26", "lf26", "hf26"] }),
     log: () => {},
@@ -72,7 +85,7 @@ test("fetchUpcomingAuctionCodes reads codes from /upcoming/, deduplicated", asyn
 });
 
 test("fetchAuctionClosesAt reads endDate from the auction's own schema.org Event markup", async () => {
-  const scraper = new RmSothebysScraper({
+  const scraper = new RmSothebysScraper({ fx: fakeFx,
     dataDir: tmpDir(),
     fetchImpl: stubFetch({ closesAtByCode: { hf26: "2026-12-25" } }),
     log: () => {},
@@ -84,7 +97,7 @@ test("fetchAuctionClosesAt reads endDate from the auction's own schema.org Event
 
 test("run() maps a search item to a RareLot with USD estimate (from the lot page, not list value) and no live bid", async () => {
   const dataDir = tmpDir();
-  const scraper = new RmSothebysScraper({
+  const scraper = new RmSothebysScraper({ fx: fakeFx,
     dataDir,
     fetchImpl: stubFetch({ codes: ["hf26"], itemsByCode: { HF26: [searchItem()] } }),
     log: () => {},
@@ -108,7 +121,7 @@ test("run() maps a search item to a RareLot with USD estimate (from the lot page
 
 test("run() extracts the USD line even when the lot's own currency is not USD", async () => {
   const dataDir = tmpDir();
-  const scraper = new RmSothebysScraper({
+  const scraper = new RmSothebysScraper({ fx: fakeFx,
     dataDir,
     fetchImpl: stubFetch({
       codes: ["lf26"],
@@ -129,7 +142,7 @@ test("run() derives status from the auction's closesAt", async () => {
   const dataDir = tmpDir();
   const soon = new Date(Date.now() + 2 * 3600 * 1000).toISOString().slice(0, 10);
 
-  const scraper = new RmSothebysScraper({
+  const scraper = new RmSothebysScraper({ fx: fakeFx,
     dataDir,
     fetchImpl: stubFetch({ codes: ["hf26"], itemsByCode: { HF26: [searchItem()] }, closesAtByCode: { hf26: soon } }),
     log: () => {},
@@ -154,7 +167,7 @@ test("fetchAuctionCarLots walks every page up to totalPages", async () => {
     return { ok: true, status: 200, text: async () => lotDetailHtml() };
   };
 
-  const scraper = new RmSothebysScraper({ dataDir: tmpDir(), fetchImpl, log: () => {} });
+  const scraper = new RmSothebysScraper({ fx: fakeFx, dataDir: tmpDir(), fetchImpl, log: () => {} });
   const items = await scraper.fetchAuctionCarLots("hf26");
 
   assert.deepEqual(calls, [0, 1, 2]);
@@ -179,7 +192,7 @@ test("fetchActiveListings keeps going when one auction's SearchLots call fails, 
     return { ok: true, status: 200, text: async () => lotDetailHtml() };
   };
 
-  const scraper = new RmSothebysScraper({ dataDir: tmpDir(), fetchImpl, log: () => {} });
+  const scraper = new RmSothebysScraper({ fx: fakeFx, dataDir: tmpDir(), fetchImpl, log: () => {} });
   const lots = await scraper.fetchActiveListings();
   assert.equal(lots.length, 1); // bad26 сорвался, empty26 без лотов, hf26 всё равно собрался
 });
@@ -189,7 +202,7 @@ test("run() reports only genuinely new lots to alerts.checkAfterRun", async () =
   const calls = [];
   const alerts = { checkAfterRun: async (args) => { calls.push(args); } };
 
-  const scraper = new RmSothebysScraper({
+  const scraper = new RmSothebysScraper({ fx: fakeFx,
     dataDir,
     alerts,
     fetchImpl: stubFetch({ codes: ["hf26"], itemsByCode: { HF26: [searchItem({ id: "a1" })] } }),
@@ -211,7 +224,7 @@ test("run() reports only genuinely new lots to alerts.checkAfterRun", async () =
 
 test("run() writes a failed status and rethrows when /upcoming/ itself fails", async () => {
   const dataDir = tmpDir();
-  const scraper = new RmSothebysScraper({
+  const scraper = new RmSothebysScraper({ fx: fakeFx,
     dataDir,
     fetchImpl: async () => ({ ok: false, status: 500 }),
     log: () => {},
@@ -253,7 +266,7 @@ const stubSoldFetch = ({ resultsCodes = ["az26"], pastCodes = [], ...rest } = {}
 test("updateSoldArchive archives sold lots with the real price, date of the auction and year", async () => {
   const dataDir = tmpDir();
   const stub = stubSoldFetch({ itemsByCode: { AZ26: [soldItem()] }, closesAtByCode: { az26: "2026-01-23" } });
-  const scraper = new RmSothebysScraper({ dataDir, fetchImpl: stub.fetchImpl, log: () => {} });
+  const scraper = new RmSothebysScraper({ dataDir, fx: fakeFx, fetchImpl: stub.fetchImpl, log: () => {} });
 
   assert.equal(await scraper.updateSoldArchive(), 1);
 
@@ -273,7 +286,7 @@ test("updateSoldArchive archives sold lots with the real price, date of the auct
   fs.rmSync(dataDir, { recursive: true, force: true });
 });
 
-test("updateSoldArchive converts £ € CHF to USD and keeps the original price", async () => {
+test("updateSoldArchive converts £ € CHF to USD at the auction-date rate and keeps the original price", async () => {
   const dataDir = tmpDir();
   const stub = stubSoldFetch({
     itemsByCode: {
@@ -284,16 +297,18 @@ test("updateSoldArchive converts £ € CHF to USD and keeps the original price"
       ],
     },
   });
-  const scraper = new RmSothebysScraper({ dataDir, fetchImpl: stub.fetchImpl, log: () => {} });
+  const scraper = new RmSothebysScraper({ dataDir, fx: fakeFx, fetchImpl: stub.fetchImpl, log: () => {} });
 
   await scraper.updateSoldArchive();
   const byId = Object.fromEntries(scraper.readSold().map(l => [l.id, l]));
 
-  assert.equal(byId["rmsothebys-g"].salePrice, Math.round(15525 * 1.32338));
+  assert.equal(byId["rmsothebys-g"].salePrice, 15525 * 2);
   assert.equal(byId["rmsothebys-g"].salePriceLocal, 15525);
   assert.equal(byId["rmsothebys-g"].currency, "GBP");
-  assert.equal(byId["rmsothebys-e"].salePrice, Math.round(92000 * 1.12979));
-  assert.equal(byId["rmsothebys-c"].salePrice, Math.round(71300 * 1.1972));
+  assert.equal(byId["rmsothebys-g"].fxRate, 2);
+  assert.equal(byId["rmsothebys-g"].fxDate, "2026-10-07"); // по дате аукциона, а не по сегодняшней
+  assert.equal(byId["rmsothebys-e"].salePrice, 92000 * 1.5);
+  assert.equal(byId["rmsothebys-c"].salePrice, Math.round(71300 * 1.2));
 
   fs.rmSync(dataDir, { recursive: true, force: true });
 });
@@ -310,7 +325,7 @@ test("updateSoldArchive skips unsold lots (value is an estimate range), sealed l
       ],
     },
   });
-  const scraper = new RmSothebysScraper({ dataDir, fetchImpl: stub.fetchImpl, log: () => {} });
+  const scraper = new RmSothebysScraper({ dataDir, fx: fakeFx, fetchImpl: stub.fetchImpl, log: () => {} });
 
   await scraper.updateSoldArchive();
   assert.deepEqual(scraper.readSold().map(l => l.id), ["rmsothebys-ok"]);
@@ -322,7 +337,7 @@ test("updateSoldArchive does not re-fetch a settled auction, but re-checks a fre
   const dataDir = tmpDir();
   let now = Date.parse("2026-02-20T00:00:00Z");
   const stub = stubSoldFetch({ resultsCodes: ["az26"], itemsByCode: { AZ26: [soldItem()] }, closesAtByCode: { az26: "2026-01-23" } });
-  const scraper = new RmSothebysScraper({ dataDir, fetchImpl: stub.fetchImpl, now: () => now, log: () => {} });
+  const scraper = new RmSothebysScraper({ dataDir, fx: fakeFx, fetchImpl: stub.fetchImpl, now: () => now, log: () => {} });
 
   await scraper.updateSoldArchive();
   const searchCalls = () => stub.calls.filter(href => href.includes("SearchLots")).length;
@@ -350,7 +365,7 @@ test("updateSoldArchive takes at most maxAuctions per run, newest results first"
     pastCodes: ["a3", "a4"],
     itemsByCode: { A1: [soldItem({ id: "x1" })], A2: [soldItem({ id: "x2" })], A3: [soldItem({ id: "x3" })], A4: [soldItem({ id: "x4" })] },
   });
-  const scraper = new RmSothebysScraper({ dataDir, fetchImpl: stub.fetchImpl, log: () => {} });
+  const scraper = new RmSothebysScraper({ dataDir, fx: fakeFx, fetchImpl: stub.fetchImpl, log: () => {} });
 
   await scraper.updateSoldArchive({ maxAuctions: 3 });
   assert.deepEqual(scraper.readSold().map(l => l.id).sort(), ["rmsothebys-x1", "rmsothebys-x2", "rmsothebys-x3"]);
@@ -361,7 +376,7 @@ test("updateSoldArchive takes at most maxAuctions per run, newest results first"
 test("run() still succeeds when the sold-archive fetch fails", async () => {
   const dataDir = tmpDir();
   const base = stubFetch({ codes: ["hf26"], itemsByCode: { HF26: [searchItem()] } });
-  const scraper = new RmSothebysScraper({
+  const scraper = new RmSothebysScraper({ fx: fakeFx,
     dataDir,
     fetchImpl: async (url, options) => String(url).endsWith("/results/") ? { ok: false, status: 500 } : base(url, options),
     log: () => {},
@@ -379,7 +394,7 @@ test("updateSoldArchive stops retrying an auction whose own page does not exist 
   const dataDir = tmpDir();
   const base = stubSoldFetch({ resultsCodes: ["old04"], itemsByCode: { OLD04: [soldItem({ id: "o1" })] } });
   const fetchImpl = async (url, options) => /\/auctions\/old04\/$/.test(String(url)) ? { ok: false, status: 404 } : base.fetchImpl(url, options);
-  const scraper = new RmSothebysScraper({ dataDir, fetchImpl, log: () => {} });
+  const scraper = new RmSothebysScraper({ dataDir, fx: fakeFx, fetchImpl, log: () => {} });
 
   await scraper.updateSoldArchive();
   assert.deepEqual(scraper.readSold(), []); // даты нет — лот не архивируем

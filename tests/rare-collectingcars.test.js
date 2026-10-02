@@ -6,6 +6,19 @@ const path = require("node:path");
 
 const CollectingCarsScraper = require("../src/rare/collectingcars-scraper");
 
+// Курсы на день продажи в тестах — свои, чтобы не ходить в сеть: фунт = 2, евро = 1.5, франк = 1.2, австралийский доллар = 0.5.
+const FAKE_RATES = { USD: 1, GBP: 2, EUR: 1.5, CHF: 1.2, AUD: 0.5, NZD: 0.4 };
+const fakeFx = {
+  calls: [],
+  async convert(amount, currency, soldAt) {
+    this.calls.push({ amount, currency, soldAt });
+    const rate = FAKE_RATES[currency];
+    if (!rate)
+      throw new Error(`нет курса ${currency}`);
+    return { salePrice: Math.round(amount * rate), fxRate: rate, fxDate: String(soldAt).slice(0, 10) };
+  },
+};
+
 const tmpDir = () => fs.mkdtempSync(path.join(os.tmpdir(), "bronvera-rare-collectingcars-"));
 
 const hitsResponse = (docs, found = docs.length) => ({
@@ -58,7 +71,7 @@ const soldDoc = (n, overrides = {}) => ({
 
 const scraperWith = (api, extra = {}) => {
   const dataDir = tmpDir();
-  return new CollectingCarsScraper({ dataDir, fetchImpl: api.fetchImpl, log: () => {}, ...extra });
+  return new CollectingCarsScraper({ dataDir, fetchImpl: api.fetchImpl, fx: fakeFx, log: () => {}, ...extra });
 };
 
 const cleanup = scraper => fs.rmSync(scraper.dataDir, { recursive: true, force: true });
@@ -190,7 +203,7 @@ test("run() writes a failed status and rethrows when the search fails", async ()
   cleanup(scraper);
 });
 
-test("updateSoldArchive archives a sold car, converting the sale price to USD and keeping the original", async () => {
+test("updateSoldArchive archives a sold car, converting the sale price to USD at the sale-date rate and keeping the original", async () => {
   const api = fakeSearch({ sold: [soldDoc(1)] });
   const scraper = scraperWith(api);
 
@@ -201,9 +214,11 @@ test("updateSoldArchive archives a sold car, converting the sale price to USD an
   assert.equal(lot.sourceUrl, "https://collectingcars.com/for-sale/2012-bentley-continental-gtc-v8-1");
   assert.equal(lot.make, "Bentley");
   assert.equal(lot.year, 2012);
-  assert.equal(lot.salePrice, Math.round(80100 * 0.69505));
+  assert.equal(lot.salePrice, Math.round(80100 * 0.5));
   assert.equal(lot.salePriceLocal, 80100);
   assert.equal(lot.currency, "AUD");
+  assert.equal(lot.fxRate, 0.5);
+  assert.equal(lot.fxDate, "2026-10-02");
   assert.equal(lot.sold, true);
   assert.equal(lot.soldAt, "2026-10-02T06:47:24.000Z");
   assert.equal(lot.photoUrl, "https://images.collectingcars.com/091987/2-9-26KR9.jpg?w=1280&q=75");
@@ -265,6 +280,33 @@ test("run() still succeeds when the sold-archive request fails", async () => {
   assert.equal(lots.length, 1);
   assert.equal(scraper.readStatus().ok, true);
   assert.deepEqual(scraper.readSold(), []);
+
+  cleanup(scraper);
+});
+
+test("updateSoldArchive leaves a sold lot out (to retry next run) when the sale-date rate is unavailable", async () => {
+  const scraper = scraperWith(fakeSearch({ sold: [soldDoc(1)] }), { fx: { convert: async () => { throw new Error("сервис курсов недоступен"); } } });
+
+  assert.equal(await scraper.updateSoldArchive(), 0);
+  assert.deepEqual(scraper.readSold(), []);
+
+  cleanup(scraper);
+});
+
+test("updateSoldArchive re-prices archived lots that still carry the old fixed-rate price, using the sale-date rate", async () => {
+  const scraper = scraperWith(fakeSearch());
+  fs.mkdirSync(scraper.dataDir, { recursive: true });
+  fs.writeFileSync(scraper.soldFile(), JSON.stringify({
+    old: { id: "old", soldAt: "2020-05-05T10:00:00.000Z", salePrice: 1, salePriceLocal: 1000, currency: "GBP" },
+    usd: { id: "usd", soldAt: "2020-05-05T10:00:00.000Z", salePrice: 500, salePriceLocal: 500, currency: "USD" },
+  }));
+
+  await scraper.updateSoldArchive();
+
+  const byId = Object.fromEntries(scraper.readSold().map(l => [l.id, l]));
+  assert.equal(byId.old.salePrice, 2000);
+  assert.equal(byId.old.fxDate, "2020-05-05");
+  assert.equal(byId.usd.salePrice, 500); // доллары не трогаем
 
   cleanup(scraper);
 });

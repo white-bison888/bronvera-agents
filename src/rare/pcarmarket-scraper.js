@@ -4,7 +4,7 @@ const vm = require("vm");
 const { applyLiteBrowsing } = require("../providers/lite-browsing");
 const { meterBrowserContext } = require("../costs/ledger");
 const { describeTransmission } = require("./transmission");
-const { loadSoldArchive, saveSoldArchive, yearFromTitle } = require("./sold-archive");
+const { loadSoldArchive, readSoldArchiveCached, saveSoldArchive, yearFromTitle } = require("./sold-archive");
 
 /*
  * BRONVERA Rare, Фаза 3 (01.10.2026): вторая площадка — PCARMARKET.
@@ -214,7 +214,7 @@ class PcarmarketScraper {
   }
 
   readSold() {
-    return Object.values(loadSoldArchive(this.soldFile()));
+    return Object.values(readSoldArchiveCached(this.soldFile()));
   }
 
   statusFile() {

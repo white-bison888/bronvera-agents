@@ -1,7 +1,8 @@
 const fs = require("fs");
 const path = require("path");
 const { guessMake, guessModel } = require("./title-parser");
-const { loadSoldArchive, saveSoldArchive, yearFromTitle } = require("./sold-archive");
+const { loadSoldArchive, readSoldArchiveCached, saveSoldArchive, yearFromTitle } = require("./sold-archive");
+const { FxRates, reconvertArchive } = require("./fx");
 
 /*
  * BRONVERA Rare, Фаза 3 (01.10.2026): шестая площадка — Collecting Cars.
@@ -103,11 +104,16 @@ const toRareLot = (doc, now) => {
 /*
  * Вкладка Stats (02.10.2026, просьба Mikita): проданные лоты. В индексе
  * нет стадии «не продан», только подтверждённые продажи. Цена приходит в
- * валюте лота: в архив кладём и пересчёт в USD, и исходную цену с валютой.
+ * валюте лота: в архиве храним её как есть (salePriceLocal + currency), а
+ * salePrice в USD считаем по курсу ЕЦБ на день продажи (см. fx.js) —
+ * сегодняшним курсом старые лоты пересчитывать нельзя.
  */
+const SOLD_CURRENCIES = new Set(Object.keys(FX_BY_CODE).map(code => code.toUpperCase()));
+
 const toSoldLot = (doc) => {
-  const salePrice = doc.isSoldPriceHidden ? null : toUsd(doc.priceSold, doc.currencyCode);
-  if (salePrice === null)
+  const currency = String(doc.currencyCode || "").toUpperCase();
+  const soldAt = utcIso(doc.dtSoldUTC);
+  if (doc.isSoldPriceHidden || typeof doc.priceSold !== "number" || !SOLD_CURRENCIES.has(currency) || !soldAt)
     return null;
 
   const make = doc.productMake || guessMake(doc.title);
@@ -121,10 +127,10 @@ const toSoldLot = (doc) => {
     year: Number.isFinite(year) && year > 1800 ? year : yearFromTitle(doc.title),
     source: "Collecting Cars",
     sourceUrl: `https://collectingcars.com/for-sale/${doc.slug}`,
-    soldAt: utcIso(doc.dtSoldUTC),
-    salePrice,
+    soldAt,
+    salePrice: null, // подставляется по курсу на день продажи
     salePriceLocal: doc.priceSold,
-    currency: String(doc.currencyCode).toUpperCase(),
+    currency,
     sold: true,
     estimateMin: null,
     estimateMax: null,
@@ -142,8 +148,9 @@ class CollectingCarsScraper {
     log = (...args) => console.log(...args),
     alerts = null,
     fetchImpl = fetch,
+    fx = new FxRates({ file: path.join(dataDir, "..", "fx-rates.json") }),
   } = {}) {
-    Object.assign(this, { dataDir, now, log, alerts, fetchImpl });
+    Object.assign(this, { dataDir, now, log, alerts, fetchImpl, fx });
   }
 
   lotsFile() {
@@ -182,7 +189,7 @@ class CollectingCarsScraper {
   }
 
   readSold() {
-    return Object.values(loadSoldArchive(this.soldFile()));
+    return Object.values(readSoldArchiveCached(this.soldFile()));
   }
 
   /*
@@ -246,10 +253,17 @@ class CollectingCarsScraper {
 
       for (const doc of docs) {
         const soldLot = toSoldLot(doc);
-        if (soldLot && !archive[soldLot.id]) {
-          archive[soldLot.id] = soldLot;
-          newOnPage += 1;
+        if (!soldLot || archive[soldLot.id])
+          continue;
+        try {
+          Object.assign(soldLot, await this.fx.convert(soldLot.salePriceLocal, soldLot.currency, soldLot.soldAt));
         }
+        catch (error) {
+          this.log(`BRONVERA Rare: не пересчитал ${soldLot.id} по курсу на дату продажи: ${error.message}`);
+          continue; // попробуем снова в следующий заход — без цены в долларах лот в статистику не берём
+        }
+        archive[soldLot.id] = soldLot;
+        newOnPage += 1;
       }
 
       added += newOnPage;
@@ -258,7 +272,9 @@ class CollectingCarsScraper {
         break;
     }
 
-    if (added > 0) {
+    const reconverted = await reconvertArchive(archive, this.fx, this.log);
+
+    if (added > 0 || reconverted > 0) {
       saveSoldArchive(this.soldFile(), archive);
       this.log(`BRONVERA Rare: добавил ${added} проданных лотов Collecting Cars в архив (всего ${Object.keys(archive).length})`);
     }

@@ -2,7 +2,7 @@ const fs = require("fs");
 const path = require("path");
 const { describeTransmission } = require("./transmission");
 const { guessMake, guessModel } = require("./title-parser");
-const { loadSoldArchive, saveSoldArchive, yearFromTitle } = require("./sold-archive");
+const { loadSoldArchive, readSoldArchiveCached, saveSoldArchive, yearFromTitle } = require("./sold-archive");
 
 /*
  * BRONVERA Rare, Фаза 1 (план 30.09.2026): первая реальная площадка —
@@ -197,7 +197,7 @@ class BatScraper {
   }
 
   readSold() {
-    return Object.values(loadSoldArchive(this.soldFile()));
+    return Object.values(readSoldArchiveCached(this.soldFile()));
   }
 
   /* Архив копится: каждый разрешённый (sold: true/false, не null) лот добавляется один раз. */

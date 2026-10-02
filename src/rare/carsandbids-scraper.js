@@ -3,7 +3,7 @@ const path = require("path");
 const { applyLiteBrowsing } = require("../providers/lite-browsing");
 const { meterBrowserContext } = require("../costs/ledger");
 const { guessMake, guessModel } = require("./title-parser");
-const { loadSoldArchive, saveSoldArchive, yearFromTitle } = require("./sold-archive");
+const { loadSoldArchive, readSoldArchiveCached, saveSoldArchive, yearFromTitle } = require("./sold-archive");
 
 /*
  * BRONVERA Rare, Фаза 3 (01.10.2026): четвёртая площадка — Cars & Bids.
@@ -160,7 +160,7 @@ class CarsAndBidsScraper {
   }
 
   readSold() {
-    return Object.values(loadSoldArchive(this.soldFile()));
+    return Object.values(readSoldArchiveCached(this.soldFile()));
   }
 
   statusFile() {
