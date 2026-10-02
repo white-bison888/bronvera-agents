@@ -260,6 +260,9 @@ class SoldIndex {
      * (пробег, годы, двигатель, коробка, кузов), пока не наберётся minCount.
      */
     const CORE = new Set(["generation", "trim", "modified", "special"]);
+    // Статус (доработана / особая версия) не снимаем никогда; комплектацию и поколение — только если без этого сравнивать вообще не с чем.
+    const status = criteria.filter(item => item.key === "modified" || item.key === "special");
+    const identity = criteria.filter(item => item.key === "generation" || item.key === "trim");
     const core = criteria.filter(item => CORE.has(item.key));
     const soft = criteria.filter(item => !CORE.has(item.key));
     let activeSoft = soft;
@@ -271,7 +274,15 @@ class SoldIndex {
       activeSoft = activeSoft.slice(0, -1);
       matches = matchFor(activeSoft);
     }
-    const active = [...core, ...activeSoft];
+    let activeCore = core;
+    // Совсем нет подходящих (редкая версия, у которой нет «двойников») — ориентир: та же линейка и тот же статус, без комплектации и поколения.
+    if (matches.length === 0 && identity.length > 0) {
+      for (const item of [...identity].reverse())
+        dropped.push(item);
+      activeCore = status;
+      matches = pool.filter(other => status.every(item => item.test(other)));
+    }
+    const active = [...activeCore, ...activeSoft];
 
     const prices = matches.map(other => other.salePrice).sort((a, b) => a - b);
     const at = q => (prices.length ? prices[Math.min(prices.length - 1, Math.floor((prices.length - 1) * q))] : null);

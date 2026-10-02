@@ -216,6 +216,20 @@ test("comparables() never mixes modified or special-version cars with ordinary o
   assert.equal(comps.thin, true);
   assert.equal(comps.median, 300000);
 
+  // у «двойников» нет вовсе — сравниваем с другими особыми версиями той же линейки (без комплектации)
+  const lone = new SoldIndex([fakeScraper(tmpDir(), "b", [
+    car("me2", { model: "911 Carrera 3.2", flags: ["special"], salePrice: 357000 }),
+    car("sib", { model: "911 Turbo", flags: ["special"], salePrice: 220000 }),
+    car("sib2", { model: "911 GT3", flags: ["special"], salePrice: 260000 }),
+    ...Array.from({ length: 6 }, (_, i) => car(`plainT${i}`, { model: "911 Turbo" })),
+    ...Array.from({ length: 6 }, (_, i) => car(`plainG${i}`, { model: "911 GT3" })),
+    ...Array.from({ length: 6 }, (_, i) => car(`plain${i}`, { model: "911 Carrera 3.2" })),
+  ])]).comparables("me2", { minCount: 8 });
+  assert.deepEqual(lone.lots.map(l => l.id).sort(), ["sib", "sib2"]);
+  assert.ok(lone.relaxed.includes("Carrera 3.2"));
+  assert.ok(lone.criteria.includes("особая версия"));
+  assert.equal(lone.thin, true);
+
   const ordinary = index.comparables("plain0", { minCount: 8 });
   assert.ok(ordinary.criteria.includes("обычная версия"));
   assert.ok(ordinary.criteria.includes("серийные"));
