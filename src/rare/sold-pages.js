@@ -46,7 +46,10 @@ const enrichFromPages = async ({
     try {
       const html = await fetchHtml(lot);
       if (html !== null)
-        enriched += applyPatch(lot, parse(html, lot));
+        // Строки из разбора — «срезы» огромного HTML страницы (V8 хранит ссылку на всю страницу). Копия через JSON
+        // даёт самостоятельные строки: иначе каждый лот удерживал бы в памяти свою страницу в полмегабайта и
+        // сервер за часы разбора упёрся бы в память.
+        enriched += applyPatch(lot, JSON.parse(JSON.stringify(parse(html, lot))));
       lot.pageCheckedAt = new Date(now()).toISOString();
       failures = 0;
     }
