@@ -148,6 +148,44 @@ const steeringOf = (...texts) => {
  * удалось найти; пустые значения не пишем, чтобы не раздувать архив десятков
  * тысяч лотов.
  */
+/*
+ * Особенности лота — то, что сильно двигает цену при той же модели и комплектации
+ * (просьба Mikita 02.10: у «Turbo-Look» Targa цена $357 тыс. против $47 тыс. у обычной).
+ * Коды: modified (доработана/рестомод/реплика), project (проект, не на ходу),
+ * unrestored (оригинал, «выживший»), restored (реставрирована), oneOwner (один
+ * владелец), special (особая версия: Turbo-Look, Paint-to-Sample, спецзаказ,
+ * «один из N», лимитированная). Малый пробег считается отдельно по пробегу и возрасту.
+ */
+const FLAG_RULES = [
+  ["modified", /(?<!un)(?<!non-)\b(modified|restomod|resto-mod|customi[sz]ed|custom[- ]built|custom|replica|recreation|tribute|kit car|re-?bodied|backdated|outlaw|hot rod|pro[- ]touring|[a-z0-9]+[- ]swapped|engine[- ]swap(?:ped)?|[a-z]{2}\d[- ]swap|conversion|converted)\b/i],
+  ["project", /\b(project|non-running|not running|needs restoration|for restoration|parts car|salvage title|rebuilt title)\b/i],
+  ["unrestored", /\b(unrestored|survivor|original[- ]paint|preservation|time[- ]capsule|barn[- ]find)\b/i],
+  ["restored", /\b(restored|restoration|concours|frame-off|nut-and-bolt|ground-up)\b/i],
+  ["oneOwner", /\b((?:one|single|original|first|sole)[- ]owner|owned by the original owner|retained by the original owner|family[- ]owned)\b/i],
+  ["special", /\b(turbo[- ]?look|paint[- ]to[- ]sample|special[- ]order|factory special|sonderwunsch|one of (?:just |only )?\d+|limited[- ]edition|collector'?s? edition|anniversary edition|commemorative|exclusive manufaktur|homologation)\b/i],
+];
+
+const flagsOf = (...texts) => {
+  const text = texts.filter(Boolean).join(" ");
+  if (!text)
+    return [];
+  const found = FLAG_RULES.filter(([, pattern]) => pattern.test(text)).map(([code]) => code);
+  // «restored» и «unrestored» одновременно — противоречие (например, «unrestored… not a restoration»): оставляем оригинал
+  return found.includes("unrestored") ? found.filter(code => code !== "restored") : found;
+};
+
+/*
+ * Малый пробег — относительный: у 30-летней машины 8 тысяч миль это очень мало, у 3-летней нет.
+ * Флаг ставим, если пробег меньше 1 200 миль в год при возрасте от 5 лет и меньше 30 тысяч миль.
+ */
+const isLowMileage = ({ mileage, year, soldAt }) => {
+  if (typeof mileage !== "number" || typeof year !== "number")
+    return false;
+  const soldYear = soldAt ? new Date(soldAt).getUTCFullYear() : new Date().getUTCFullYear();
+  const age = soldYear - year;
+  return age >= 5 && mileage < 30000 && mileage / Math.max(age, 1) < 1200;
+};
+
 const parseVehicleAttributes = (title, description = "") => {
   const text = `${title || ""}. ${description || ""}`;
   const engine = engineOf(text);
@@ -159,8 +197,9 @@ const parseVehicleAttributes = (title, description = "") => {
     aspiration: engine.aspiration,
     drivetrain: drivetrainOf(text),
     steering: steeringOf(text),
+    flags: flagsOf(title, description),
   };
-  return Object.fromEntries(Object.entries(result).filter(([, value]) => value !== null && value !== undefined));
+  return Object.fromEntries(Object.entries(result).filter(([, value]) => value !== null && value !== undefined && !(Array.isArray(value) && !value.length)));
 };
 
 /* Подпись двигателя для фильтра: «V8», «Рядный 6», «Оппозитный 6», «Роторный». */
@@ -186,4 +225,4 @@ const fillAttributes = (lot, description = "") => {
   return changed;
 };
 
-module.exports = { fillAttributes, engineLabel, bodyStyleOf, drivetrainOf, engineOf, parseVehicleAttributes, steeringOf };
+module.exports = { flagsOf, isLowMileage, fillAttributes, engineLabel, bodyStyleOf, drivetrainOf, engineOf, parseVehicleAttributes, steeringOf };

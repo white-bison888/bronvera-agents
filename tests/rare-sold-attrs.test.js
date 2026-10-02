@@ -1,7 +1,7 @@
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
 
-const { bodyStyleOf, drivetrainOf, engineLabel, engineOf, parseVehicleAttributes, steeringOf } = require("../src/rare/sold-attrs");
+const { bodyStyleOf, drivetrainOf, engineLabel, engineOf, flagsOf, isLowMileage, parseVehicleAttributes, steeringOf } = require("../src/rare/sold-attrs");
 const { buildFamilyResolver } = require("../src/rare/model-family");
 
 test("bodyStyleOf reads the body from title or description, most specific word first", () => {
@@ -49,7 +49,8 @@ test("drivetrainOf and steeringOf only report what the text states", () => {
 test("parseVehicleAttributes drops everything it could not find", () => {
   const found = parseVehicleAttributes("1997 Porsche 911 Turbo Coupe", "twin-turbocharged 3.6-liter flat-six, rear-wheel drive");
   assert.deepEqual(found, { bodyStyle: "Купе", cylinders: 6, engineLayout: "Оппозитный", displacement: 3.6, aspiration: "Турбо", drivetrain: "Задний" });
-  assert.deepEqual(parseVehicleAttributes("350-Powered Replica"), {});
+  assert.deepEqual(parseVehicleAttributes("350-Powered Replica"), { flags: ["modified"] });
+  assert.deepEqual(parseVehicleAttributes("1995 Mazda MX-5 Miata"), {});
 });
 
 const lots = (make, models) => models.flatMap(([model, n]) => Array.from({ length: n }, () => ({ make, model })));
@@ -95,4 +96,27 @@ test("«Turbo-Look» is a body package, not a turbocharged engine", () => {
   assert.equal(engineOf("1986 Porsche 911 Carrera 3.2 Turbo Look").aspiration, null);
   assert.equal(engineOf("1989 Porsche 911 Turbo").aspiration, "Турбо");
   assert.equal(engineOf("Turbo-Look body with a turbocharged 3.3-liter flat-six").aspiration, "Турбо");
+});
+
+test("flagsOf finds the features that move the price: modified, project, original, restored, one owner, special", () => {
+  assert.deepEqual(flagsOf("1989 Porsche 911 Carrera 3.2 Targa 'Turbo-Look'"), ["special"]);
+  assert.deepEqual(flagsOf("Modified 1996 Porsche 911 Carrera"), ["modified"]);
+  assert.deepEqual(flagsOf("1969 Chevrolet Camaro LS3-Swapped Restomod"), ["modified"]);
+  assert.deepEqual(flagsOf("1965 Ford Mustang Fastback Recreation"), ["modified"]);
+  assert.deepEqual(flagsOf("Original-Owner 1993 BMW 850Ci"), ["oneOwner"]);
+  assert.deepEqual(flagsOf("1972 Datsun 240Z Project"), ["project"]);
+  assert.deepEqual(flagsOf("1991 Honda NSX Survivor"), ["unrestored"]);
+  assert.deepEqual(flagsOf("1964 Jaguar E-Type", "Fully restored in 2019, concours quality"), ["restored"]);
+  assert.deepEqual(flagsOf("2005 Porsche 911 GT3", "one of 15 examples, paint-to-sample Irish Green"), ["special"]);
+  assert.deepEqual(flagsOf("Unmodified 1995 Mazda RX-7"), []); // «un-» и «non-» не считаются доработкой
+  assert.deepEqual(flagsOf("1995 Mazda RX-7", "a non-modified example"), []);
+  assert.deepEqual(flagsOf("1967 Corvette", "unrestored survivor, not a restoration"), ["unrestored"]);
+  assert.deepEqual(flagsOf(""), []);
+});
+
+test("isLowMileage is relative to age: 8k miles on a 37-year-old car is low, on a 2-year-old one it is not", () => {
+  assert.equal(isLowMileage({ mileage: 7944, year: 1989, soldAt: "2026-08-15" }), true);
+  assert.equal(isLowMileage({ mileage: 7944, year: 2024, soldAt: "2026-08-15" }), false);
+  assert.equal(isLowMileage({ mileage: 45000, year: 1995, soldAt: "2026-01-01" }), false);
+  assert.equal(isLowMileage({ mileage: null, year: 1989 }), false);
 });

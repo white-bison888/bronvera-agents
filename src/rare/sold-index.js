@@ -1,5 +1,5 @@
 const fs = require("fs");
-const { engineLabel } = require("./sold-attrs");
+const { engineLabel, isLowMileage } = require("./sold-attrs");
 const { buildFamilyResolver } = require("./model-family");
 
 /*
@@ -22,7 +22,7 @@ const { buildFamilyResolver } = require("./model-family");
  * остаток названия — комплектация — идёт отдельной колонкой trim (см.
  * model-family.js). Новые колонки только в конце.
  */
-const POINT_FIELDS = ["id", "soldAt", "salePrice", "source", "make", "model", "year", "mileage", "transmission", "color", "sold", "body", "engine", "drive", "trim", "generation", "resale"];
+const POINT_FIELDS = ["id", "soldAt", "salePrice", "source", "make", "model", "year", "mileage", "transmission", "color", "sold", "body", "engine", "drive", "trim", "generation", "resale", "flags"];
 const TRANSMISSION_CODES = { manual: 1, automatic: 2 };
 
 /* Всё, что страница ждёт от лота, — с пустыми значениями по умолчанию (старые записи архива их не имеют). */
@@ -40,6 +40,7 @@ const fullLot = lot => ({
   model: null,
   sold: null,
   ...lot,
+  lowMileage: isLowMileage(lot), // относительный: считается по пробегу и возрасту
 });
 
 /*
@@ -56,6 +57,35 @@ const resaleKeyOf = (lot) => {
     return `ch:${String(lot.make).toLowerCase()}:${chassis}`;
   return null;
 };
+
+/*
+ * Особенности лота битами (см. FLAG_RULES в sold-attrs.js): 1 доработана, 2 проект, 4 оригинал,
+ * 8 реставрирована, 16 один владелец, 32 особая версия, 64 малый пробег (считается по пробегу и возрасту).
+ */
+const FLAG_BITS = { modified: 1, project: 2, unrestored: 4, restored: 8, oneOwner: 16, special: 32 };
+const LOW_MILEAGE_BIT = 64;
+
+const flagMask = (lot) => {
+  let mask = 0;
+  for (const code of lot.flags || [])
+    mask |= FLAG_BITS[code] || 0;
+  if (isLowMileage(lot))
+    mask |= LOW_MILEAGE_BIT;
+  return mask;
+};
+
+const conditionOf = (lot) => {
+  const flags = lot.flags || [];
+  if (flags.includes("project"))
+    return "project";
+  if (flags.includes("unrestored"))
+    return "unrestored";
+  if (flags.includes("restored"))
+    return "restored";
+  return null;
+};
+
+const CONDITION_LABELS = { project: "проект", unrestored: "оригинал", restored: "реставрирована" };
 
 const signatureOf = (files) => {
   return files.map((file) => {
@@ -164,6 +194,7 @@ class SoldIndex {
         code("trim", lot.trimName || trim),
         code("generation", lot.generation || generation),
         this.resaleOf.has(lot.id) ? this.resaleOf.get(lot.id) : -1,
+        flagMask(lot),
       ]);
     }
 
@@ -204,14 +235,22 @@ class SoldIndex {
     };
 
     // Критерии от самых важных к менее важным; у каждого — подпись и проверка. Критерий без данных у самого лота пропускаем.
+    const myFlags = new Set(lot.flags || []);
+    const myCondition = conditionOf(lot);
     const criteria = [
       { key: "generation", label: mine.generation ? `поколение ${mine.generation}` : null, use: Boolean(mine.generation), test: o => generationOf(o) === mine.generation },
+      // Доработанная и особая версия — другая позиция: «Turbo-Look» с заводской краской по спецзаказу нельзя мерить обычными Carrera.
+      { key: "modified", label: myFlags.has("modified") ? "доработанные" : "серийные", use: true, test: o => (o.flags || []).includes("modified") === myFlags.has("modified") },
+      { key: "special", label: myFlags.has("special") ? "особая версия" : "обычная версия", use: true, test: o => (o.flags || []).includes("special") === myFlags.has("special") },
       { key: "trim", label: mine.trim, use: Boolean(mine.trim), test: o => (o.trimName || this.resolveFamily(o).trim) === mine.trim },
+      { key: "condition", label: myCondition ? CONDITION_LABELS[myCondition] : null, use: Boolean(myCondition), test: o => conditionOf(o) === myCondition },
       { key: "body", label: lot.bodyStyle, use: Boolean(lot.bodyStyle), test: o => o.bodyStyle === lot.bodyStyle },
       { key: "transmission", label: lot.transmissionKind === "manual" ? "механика" : "автомат", use: Boolean(lot.transmissionKind), test: o => o.transmissionKind === lot.transmissionKind },
       { key: "engine", label: engineLabel(lot), use: Boolean(engineLabel(lot)), test: o => engineLabel(o) === engineLabel(lot) },
       { key: "years", label: typeof lot.year === "number" ? `${lot.year - 3}–${lot.year + 3} гг.` : null, use: typeof lot.year === "number", test: o => typeof o.year === "number" && Math.abs(o.year - lot.year) <= 3 },
       { key: "mileage", label: typeof lot.mileage === "number" ? "близкий пробег" : null, use: typeof lot.mileage === "number", test: o => typeof o.mileage === "number" && mileageBand(o.mileage) === mileageBand(lot.mileage) },
+      { key: "lowMileage", label: isLowMileage(lot) ? "малый пробег" : null, use: isLowMileage(lot), test: o => isLowMileage(o) },
+      { key: "oneOwner", label: myFlags.has("oneOwner") ? "один владелец" : null, use: myFlags.has("oneOwner"), test: o => (o.flags || []).includes("oneOwner") },
     ].filter(item => item.use);
 
     /*
@@ -220,8 +259,9 @@ class SoldIndex {
      * даже если совпадений мало. Остальные признаки снимаем по одному с конца
      * (пробег, годы, двигатель, коробка, кузов), пока не наберётся minCount.
      */
-    const core = criteria.filter(item => item.key === "generation" || item.key === "trim");
-    const soft = criteria.filter(item => item.key !== "generation" && item.key !== "trim");
+    const CORE = new Set(["generation", "trim", "modified", "special"]);
+    const core = criteria.filter(item => CORE.has(item.key));
+    const soft = criteria.filter(item => !CORE.has(item.key));
     let activeSoft = soft;
     const matchFor = list => pool.filter(other => [...core, ...list].every(item => item.test(other)));
     let matches = matchFor(activeSoft);

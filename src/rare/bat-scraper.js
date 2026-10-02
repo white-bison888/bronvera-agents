@@ -230,7 +230,7 @@ const COMPLETED_PER_PAGE = 60;
 const COMPLETED_MAX_PAGE = 165;
 const REQUEST_GAP_MS = 1500;
 // Поля, которые можно дописать лоту, уже лежащему в архиве, не затирая известное.
-const ENRICH_KEYS = ["mileage", "transmission", "transmissionKind", "exteriorColor", "colorGroup", "bodyStyle", "cylinders", "engineLayout", "displacement", "aspiration", "drivetrain", "steering"];
+const ENRICH_KEYS = ["mileage", "transmission", "transmissionKind", "exteriorColor", "colorGroup", "bodyStyle", "cylinders", "engineLayout", "displacement", "aspiration", "drivetrain", "steering", "flags"];
 const SLOW_DOWN_WAIT_MS = 30_000;
 
 // Мотоциклы, скутеры и прочее не-авто попадают в тот же список без категорий — отсекаем по названию.

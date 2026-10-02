@@ -44,7 +44,7 @@ test("points() returns compact rows with dictionaries instead of repeated string
 
   const { fields, dict, rows } = index.points();
 
-  assert.deepEqual(fields, ["id", "soldAt", "salePrice", "source", "make", "model", "year", "mileage", "transmission", "color", "sold", "body", "engine", "drive", "trim", "generation", "resale"]);
+  assert.deepEqual(fields, ["id", "soldAt", "salePrice", "source", "make", "model", "year", "mileage", "transmission", "color", "sold", "body", "engine", "drive", "trim", "generation", "resale", "flags"]);
   assert.deepEqual(dict.model.sort(), ["911", "Cayman"]);
   assert.equal(rows.length, 2);
 
@@ -198,4 +198,37 @@ test("the same car sold more than once is grouped by VIN (or chassis number + ma
   assert.equal(byId.v1[15 + 1], byId.v2[16]);
   assert.ok(byId.v1[16] >= 0);
   assert.equal(byId.other[16], -1);
+});
+
+test("comparables() never mixes modified or special-version cars with ordinary ones, and reports a thin sample instead of loosening that", () => {
+  const dir = tmpDir();
+  const car = (id, o = {}) => lot(id, { model: "911 Carrera 3.2", year: 1989, bodyStyle: "Тарга", mileage: 60000, salePrice: 50000, ...o });
+  const index = new SoldIndex([fakeScraper(dir, "a", [
+    car("me", { flags: ["special", "oneOwner"], mileage: 7944, salePrice: 357000 }),
+    ...Array.from({ length: 12 }, (_, i) => car(`plain${i}`)),
+    car("other-special", { flags: ["special"], salePrice: 300000 }),
+    ...Array.from({ length: 5 }, (_, i) => car(`mod${i}`, { flags: ["modified"], salePrice: 90000 })),
+  ])]);
+
+  const comps = index.comparables("me", { minCount: 8 });
+  assert.ok(comps.criteria.includes("особая версия"));
+  assert.deepEqual(comps.lots.map(l => l.id), ["other-special"]); // обычные Carrera в сравнение не попали
+  assert.equal(comps.thin, true);
+  assert.equal(comps.median, 300000);
+
+  const ordinary = index.comparables("plain0", { minCount: 8 });
+  assert.ok(ordinary.criteria.includes("обычная версия"));
+  assert.ok(ordinary.criteria.includes("серийные"));
+  assert.ok(ordinary.lots.every(l => !(l.flags || []).length));
+});
+
+test("points() flags column packs modified/project/original/restored/one-owner/special and a computed low mileage", () => {
+  const dir = tmpDir();
+  const index = new SoldIndex([fakeScraper(dir, "a", [
+    lot("f1", { flags: ["modified", "special"], year: 1989, mileage: 7944, soldAt: "2026-08-15T00:00:00.000Z" }),
+    lot("f2", { year: 2024, mileage: 7944, soldAt: "2026-08-15T00:00:00.000Z" }),
+  ])]);
+  const byId = Object.fromEntries(index.points().rows.map(r => [r[0], r]));
+  assert.equal(byId.f1[17], 1 + 32 + 64);
+  assert.equal(byId.f2[17], 0);
 });
