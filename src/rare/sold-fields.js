@@ -192,7 +192,8 @@ const VIN_17 = /^[A-HJ-NPR-Z0-9]{17}$/;
 
 const classifyVin = (raw) => {
   const text = String(raw || "").replace(/[\s-]+/g, "").toUpperCase();
-  if (!text || text.length < 4 || /^(N\/?A|NONE|UNKNOWN|TBD)$/.test(text))
+  // Короткие номера шасси (у гоночных Ferrari «125», «036») — настоящие, показываем; для поиска перепродаж они слишком короткие (см. resaleKeyOf).
+  if (!text || !/[A-Z0-9]/.test(text) || /^(N\/?A|NONE|UNKNOWN|TBD|-+)$/.test(text))
     return {};
   return VIN_17.test(text) ? { vin: text } : { chassis: String(raw).trim().slice(0, 40) };
 };

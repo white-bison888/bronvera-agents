@@ -504,7 +504,7 @@ class RmSothebysScraper {
   }
 
   /* Дописывает проданным лотам из архива пробег, цвет, коробку и двигатель со страницы лота. */
-  async enrichSoldFromPages({ limit = Infinity, delayMs = 350 } = {}) {
+  async enrichSoldFromPages({ limit = Infinity, delayMs = 350, concurrency = 1 } = {}) {
     const archive = loadSoldArchive(this.soldFile());
     const lots = Object.values(archive)
       .filter(lot => lot.sourceUrl)
@@ -514,6 +514,7 @@ class RmSothebysScraper {
       lots,
       limit,
       delayMs,
+      concurrency,
       sleep: this.sleep,
       now: this.now,
       log: this.log,

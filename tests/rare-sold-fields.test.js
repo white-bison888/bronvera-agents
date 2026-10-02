@@ -96,4 +96,6 @@ test("classifyVin tells a real 17-character VIN from an old chassis number", () 
   assert.deepEqual(classifyVin("WP0CD2A94RS25778I"), { chassis: "WP0CD2A94RS25778I" }); // «I» в VIN не бывает
   assert.deepEqual(classifyVin(""), {});
   assert.deepEqual(classifyVin("N/A"), {});
+  assert.deepEqual(classifyVin("125"), { chassis: "125" }); // короткие номера шасси гоночных машин — настоящие
+  assert.deepEqual(classifyVin("-"), {});
 });

@@ -74,6 +74,10 @@ const fillIfEmpty = (lot, key, value) => {
  */
 const applyDecoded = (lot, result, now = Date.now()) => {
   lot.vinCheckedAt = new Date(now).toISOString();
+  // Повторная расшифровка начинается с чистого листа: отметки о происхождении данных пересчитываем.
+  delete lot.vinFields;
+  delete lot.vinInfo;
+  delete lot.vinCheck;
 
   if (!result || !result.Make) {
     lot.vinDecoded = false;
@@ -85,6 +89,7 @@ const applyDecoded = (lot, result, now = Date.now()) => {
     return 0;
   }
 
+  delete lot.vinMismatch;
   lot.vinDecoded = true;
   const clean = /^0\b/.test(String(result.ErrorCode || ""));
   let changed = 0;
@@ -92,6 +97,48 @@ const applyDecoded = (lot, result, now = Date.now()) => {
   const cylinders = Number(result.EngineCylinders);
   const displacement = Math.round(Number(result.DisplacementL) * 10) / 10;
   const layout = layoutOf(result.EngineConfiguration);
+
+  /*
+   * Что именно дала расшифровка (vinFields) — чтобы сайт отметил эти поля «по VIN»; что расшифровка
+   * утверждает о самой машине (vinInfo) — марка, модель, год, версия, завод; и где она расходится с
+   * тем, что написано в лоте (vinCheck) — год, объём двигателя, число цилиндров.
+   */
+  const vinFields = [];
+  const mark = (key, value) => {
+    if (value !== null && value !== undefined && value !== "" && !(typeof value === "number" && !Number.isFinite(value)))
+      vinFields.push(key);
+  };
+  mark("cylinders", Number.isFinite(cylinders) && cylinders > 0 ? cylinders : null);
+  mark("displacement", Number.isFinite(displacement) && displacement > 0 ? displacement : null);
+  mark("engineLayout", layout);
+  mark("bodyStyle", (BODY_BY_CLASS.find(([pattern]) => pattern.test(String(result.BodyClass || ""))) || [])[1]);
+  mark("drivetrain", driveOf(result.DriveType));
+  mark("aspiration", String(result.Turbo || "").toLowerCase() === "yes" ? "Турбо" : null);
+  mark("generation", String(result.Series || "").replace(/^Type\s+/i, "") || null);
+  mark("hp", Number(result.EngineHP) > 0 ? Number(result.EngineHP) : null);
+  mark("plantCountry", String(result.PlantCountry || "").trim() || null);
+
+  const info = {
+    make: result.Make,
+    model: result.Model || null,
+    year: Number(result.ModelYear) > 1980 ? Number(result.ModelYear) : null,
+    trim: String(result.Trim || "").trim() || null,
+    series: String(result.Series || "").trim() || null,
+    plant: String(result.PlantCountry || "").trim() || null,
+    fuel: String(result.FuelTypePrimary || "").trim() || null,
+    clean,
+  };
+  lot.vinInfo = Object.fromEntries(Object.entries(info).filter(([, value]) => value !== null));
+
+  const check = [];
+  if (info.year && typeof lot.year === "number" && Math.abs(info.year - lot.year) >= 1)
+    check.push({ field: "year", lot: lot.year, vin: info.year });
+  if (clean && Number.isFinite(displacement) && displacement > 0 && typeof lot.displacement === "number" && Math.abs(lot.displacement - displacement) > 0.15)
+    check.push({ field: "displacement", lot: lot.displacement, vin: displacement });
+  if (clean && Number.isFinite(cylinders) && cylinders > 0 && typeof lot.cylinders === "number" && lot.cylinders !== cylinders)
+    check.push({ field: "cylinders", lot: lot.cylinders, vin: cylinders });
+  if (check.length)
+    lot.vinCheck = check;
 
   if (clean) {
     if (Number.isFinite(cylinders) && cylinders > 0 && lot.cylinders !== cylinders) {
@@ -123,6 +170,9 @@ const applyDecoded = (lot, result, now = Date.now()) => {
   changed += fillIfEmpty(lot, "plantCountry", String(result.PlantCountry || "").trim() || null);
   changed += fillIfEmpty(lot, "year", Number(result.ModelYear) > 1980 ? Number(result.ModelYear) : null);
 
+  if (vinFields.length)
+    lot.vinFields = vinFields;
+
   return changed;
 };
 
@@ -147,8 +197,9 @@ const enrichWithVinDecode = async ({
   now = () => Date.now(),
   delayMs = 1000,
   log = () => {},
+  force = false, // пересчитать и уже проверенные (например, после изменения того, что храним)
 }) => {
-  const todo = lots.filter(lot => lot.vin && !lot.vinCheckedAt);
+  const todo = lots.filter(lot => lot.vin && (force || !lot.vinCheckedAt));
   let checked = 0;
   let changed = 0;
 

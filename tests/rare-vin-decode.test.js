@@ -93,3 +93,36 @@ test("enrichWithVinDecode surfaces an NHTSA failure instead of marking lots as c
   await assert.rejects(() => enrichWithVinDecode({ lots, delayMs: 0, sleep: async () => {}, save: () => {}, fetchImpl: async () => ({ ok: false, status: 503 }) }), /503/);
   assert.equal(lots[0].vinCheckedAt, undefined);
 });
+
+test("a decode records which fields came from the VIN, what the VIN says about the car, and where it disagrees with the lot", () => {
+  const lot = { make: "Porsche", year: 2023, cylinders: 8, displacement: 4.0, engineLayout: "V" };
+  applyDecoded(lot, porsche);
+
+  assert.ok(lot.vinFields.includes("cylinders"));
+  assert.ok(lot.vinFields.includes("displacement"));
+  assert.ok(lot.vinFields.includes("bodyStyle"));
+  assert.ok(lot.vinFields.includes("hp"));
+  assert.ok(!lot.vinFields.includes("year")); // год не перезаписываем — он есть в названии; расхождение — в vinCheck
+  assert.equal(lot.vinInfo.model, "911");
+  assert.equal(lot.vinInfo.year, 2024);
+  assert.equal(lot.vinInfo.clean, true);
+  assert.deepEqual(lot.vinCheck, [
+    { field: "year", lot: 2023, vin: 2024 },
+    { field: "displacement", lot: 4, vin: 3.7 },
+    { field: "cylinders", lot: 8, vin: 6 },
+  ]);
+});
+
+test("a repeated decode recomputes provenance from scratch; force re-checks lots that were already checked", async () => {
+  const lot = { id: "x", make: "Porsche", vin: "WP0CD2A94RS257786", vinCheckedAt: "2026-01-01", vinFields: ["stale"], vinCheck: [{ field: "year", lot: 1, vin: 2 }] };
+  let calls = 0;
+  const fetchImpl = async () => { calls += 1; return { ok: true, status: 200, json: async () => ({ Results: [{ ...porsche, VIN: lot.vin }] }) }; };
+
+  await enrichWithVinDecode({ lots: [lot], delayMs: 0, sleep: async () => {}, save: () => {}, fetchImpl });
+  assert.equal(calls, 0); // уже проверен
+
+  await enrichWithVinDecode({ lots: [lot], delayMs: 0, sleep: async () => {}, save: () => {}, fetchImpl, force: true });
+  assert.equal(calls, 1);
+  assert.ok(!lot.vinFields.includes("stale"));
+  assert.equal(lot.vinCheck, undefined);
+});

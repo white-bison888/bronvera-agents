@@ -32,6 +32,7 @@ const enrichFromPages = async ({
   now = () => Date.now(),
   sleep = ms => new Promise(resolve => setTimeout(resolve, ms)),
   delayMs = 600,
+  concurrency = 1, // сколько страниц тянуть одновременно (пауза delayMs — между партиями)
   limit = Infinity,
   checkpointEvery = 200,
   log = () => {},
@@ -42,26 +43,34 @@ const enrichFromPages = async ({
   let enriched = 0;
   let failures = 0;
 
-  for (const lot of todo) {
+  const handle = async (lot) => {
     try {
       const html = await fetchHtml(lot);
-      if (html !== null)
+      if (html !== null) {
         // Строки из разбора — «срезы» огромного HTML страницы (V8 хранит ссылку на всю страницу). Копия через JSON
         // даёт самостоятельные строки: иначе каждый лот удерживал бы в памяти свою страницу в полмегабайта и
         // сервер за часы разбора упёрся бы в память.
         enriched += applyPatch(lot, JSON.parse(JSON.stringify(parse(html, lot))));
+      }
       lot.pageCheckedAt = new Date(now()).toISOString();
       failures = 0;
     }
     catch (error) {
       failures += 1;
       log(`BRONVERA Rare: страница ${lot.id}: ${error.message}`);
-      if (failures >= 5)
-        throw new Error(`слишком много подряд сбоев (${error.message}) — остановился на ${done} из ${todo.length}`);
     }
+  };
 
-    done += 1;
-    if (done % checkpointEvery === 0) {
+  for (let start = 0; start < todo.length; start += concurrency) {
+    const batch = todo.slice(start, start + concurrency);
+    await Promise.all(batch.map(handle));
+
+    if (failures >= 5)
+      throw new Error(`слишком много подряд сбоев — остановился на ${done} из ${todo.length}`);
+
+    const before = Math.floor(done / checkpointEvery);
+    done += batch.length;
+    if (Math.floor(done / checkpointEvery) > before) {
       save();
       log(`BRONVERA Rare: страницы ${label}: разобрано ${done}/${todo.length}, дописано полей ${enriched}`);
     }

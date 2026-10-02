@@ -144,3 +144,31 @@ test("RM lot page body style comes from the title only", () => {
   const found = RmSothebysScraper.parseRmLotPage(rmPage({ essay: "A superb roadster." }), { title: "1954 Jaguar XK 120 Roadster" });
   assert.equal(found.bodyStyle, "Родстер");
 });
+
+test("enrichFromPages can fetch several pages at once, still visiting every lot exactly once", async () => {
+  const lots = Array.from({ length: 7 }, (_, i) => ({ id: `l${i}`, sourceUrl: `u/${i}` }));
+  let inFlight = 0;
+  let peak = 0;
+  const seen = [];
+
+  await enrichFromPages({
+    lots,
+    concurrency: 3,
+    delayMs: 0,
+    sleep: async () => {},
+    save: () => {},
+    fetchHtml: async (lot) => {
+      inFlight += 1;
+      peak = Math.max(peak, inFlight);
+      await new Promise(resolve => setTimeout(resolve, 5));
+      inFlight -= 1;
+      seen.push(lot.id);
+      return "<html/>";
+    },
+    parse: () => ({ mileage: 1 }),
+  });
+
+  assert.equal(peak, 3);
+  assert.deepEqual([...seen].sort(), lots.map(l => l.id).sort());
+  assert.ok(lots.every(lot => lot.pageCheckedAt && lot.mileage === 1));
+});

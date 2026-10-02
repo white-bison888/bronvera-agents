@@ -574,7 +574,7 @@ class BatScraper {
    * лота (см. parseSoldPage). minPrice — чтобы начать с дорогих машин, ради
    * которых сервис и существует; limit — сколько страниц за заход.
    */
-  async enrichSoldFromPages({ minPrice = 0, limit = Infinity, delayMs = 600, soldOnly = true } = {}) {
+  async enrichSoldFromPages({ minPrice = 0, limit = Infinity, delayMs = 600, soldOnly = true, concurrency = 1 } = {}) {
     const archive = loadSoldArchive(this.soldFile());
     const lots = Object.values(archive)
       .filter(lot => lot.sourceUrl && lot.salePrice >= minPrice && (!soldOnly || lot.sold !== false))
@@ -584,6 +584,7 @@ class BatScraper {
       lots,
       limit,
       delayMs,
+      concurrency,
       sleep: this.sleep,
       now: this.now,
       log: this.log,
