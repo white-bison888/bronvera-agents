@@ -79,3 +79,12 @@ test("buildFamilyResolver moves a parenthesised chassis code into generation and
   assert.deepEqual(resolve({ make: "Porsche", model: "911 (964) Carrera 2" }), { family: "911", trim: "Carrera 2", generation: "964" });
   assert.deepEqual(resolve({ make: "Porsche", model: "911 Speedster" }), { family: "911", trim: "Speedster", generation: null });
 });
+
+test("engineOf understands Collecting Cars powertrain strings: «5.5L 8V», «3.2L VR6», «0.6L H2»", () => {
+  assert.equal(engineOf("5.5L 8V (M113)").cylinders, 8);
+  assert.equal(engineOf("5.5L 8V (M113)").engineLayout, "V");
+  assert.equal(engineOf("3.2L VR6").cylinders, 6);
+  assert.equal(engineOf("0.6L H2").engineLayout, "Оппозитный");
+  assert.equal(engineOf("0.6L H2").cylinders, 2);
+  assert.equal(engineOf("Dual Electric Motor").cylinders, null);
+});

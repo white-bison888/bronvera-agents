@@ -52,8 +52,10 @@ const engineOf = (...texts) => {
   let cylinders = null;
   let engineLayout = null;
 
-  const horizontal = text.match(/\b(?:H|F)-?(4|6|8)\b/);
-  const vee = text.match(/\b([VWvw])\s?-?(2|3|4|5|6|8|10|12|16)\b(?!\s?(?:mm|mph))/);
+  const horizontal = text.match(/\b(?:H|F)-?(2|4|6|8)\b/);
+  const valveStyleVee = text.match(/\b(?:\d(?:\.\d)?\s?L\s+)?(4|6|8|10|12|16)V\b/);
+  const vrEngine = text.match(/\bVR\s?(5|6)\b/);
+  const vee = text.match(/\b([VWvw])\s?-?(2|4|5|6|8|10|12|16)\b(?!\s?(?:mm|mph|kg))/);
   const named = text.match(/\b(inline|straight|flat|boxer|horizontally[- ]opposed|rotary)[- ]?(two|three|four|five|six|eight|twelve|2|3|4|5|6|8|12)?\b/i);
   const iLetter = text.match(/\b[Ii]-?(3|4|5|6|8)\b/);
   const cylWords = text.match(/\b(two|three|four|five|six|eight|ten|twelve|sixteen)[- ]cylinder\b/i);
@@ -65,6 +67,15 @@ const engineOf = (...texts) => {
   else if (horizontal) {
     cylinders = Number(horizontal[1]);
     engineLayout = "Оппозитный";
+  }
+  else if (vrEngine) {
+    cylinders = Number(vrEngine[1]);
+    engineLayout = "V";
+  }
+  else if (valveStyleVee && /\d\s?L\b|liter|litre/i.test(text)) {
+    // «5.5L 8V» у Mercedes M113 — это V8, а не восемь клапанов: так пишет таксономия площадки
+    cylinders = Number(valveStyleVee[1]);
+    engineLayout = "V";
   }
   else if (named) {
     const kind = named[1].toLowerCase();
