@@ -235,7 +235,7 @@ test("comparables() adds the nearest cars by class and age when there are few id
   assert.ok(order.indexOf("near-year") < order.indexOf("far") || !order.includes("far"));
 });
 
-test("comparables() never mixes modified or special-version cars with ordinary ones", () => {
+test("comparables() never mixes modified cars with stock ones; special versions come first and ordinary cars are only a labelled fallback", () => {
   const index = new SoldIndex([fakeScraper(tmpDir(), "a", [
     car("me", { flags: ["special", "oneOwner"], mileage: 7944, salePrice: 357000 }),
     ...Array.from({ length: 12 }, (_, i) => car(`plain${i}`)),
@@ -244,13 +244,17 @@ test("comparables() never mixes modified or special-version cars with ordinary o
   ])]);
 
   const comps = index.comparables("me");
-  assert.deepEqual(ids(comps.lots), ["other-special"]);
-  assert.equal(comps.thin, true);
-  assert.equal(comps.median, 300000);
+  assert.equal(comps.lots[0].id, "other-special");
+  assert.equal(comps.lots[0].similarity, "exact");
+  assert.equal(comps.basis, "nearest");
+  assert.ok(!ids(comps.lots).some(id => id.startsWith("mod"))); // доработанные — никогда
+  const plain = comps.lots.find(l => l.id.startsWith("plain"));
+  assert.equal(plain.similarity, "near");
+  assert.ok(plain.differs.includes("обычная версия"));
 
   const ordinary = index.comparables("plain0");
   assert.ok(ordinary.criteria.includes("серийные"));
-  assert.ok(ordinary.lots.every(l => !(l.flags || []).length));
+  assert.ok(ordinary.lots.every(l => !(l.flags || []).includes("modified")));
 });
 
 test("comparables() treats '50th Anniversary Edition' and '50th Anniversary Edition - Manual' as the same trim", () => {
@@ -260,6 +264,14 @@ test("comparables() treats '50th Anniversary Edition' and '50th Anniversary Edit
   ])]);
   const comps = index.comparables("me");
   assert.equal(comps.exactCount, 5);
+});
+
+test("comparables() agrees on a trim that one lot names in its title and the other in the platform's taxonomy", () => {
+  const index = new SoldIndex([fakeScraper(tmpDir(), "a", [
+    car("me", { model: "911 50th Anniversary Edition", trimName: "50th Anniversary Edition", title: "2014 Porsche 911 (991) 50th Anniversary Edition", generation: "991.1", year: 2014 }),
+    ...Array.from({ length: 5 }, (_, i) => car(`cc${i}`, { model: "911 (991) 50th Anniversary Edition", trimName: "Carrera S", title: "2013 Porsche 911 (991) 50th Anniversary Edition - Manual", generation: "991.1", year: 2013 })),
+  ])]);
+  assert.equal(index.comparables("me").exactCount, 5);
 });
 
 test("comparables() returns nothing to compare when the car has no model line", () => {

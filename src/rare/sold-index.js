@@ -239,14 +239,15 @@ class SoldIndex {
     const myFlags = new Set(lot.flags || []);
     const myCondition = conditionOf(lot);
 
-    // Та же марка и линейка; доработанная и особая версия — другая позиция, их не смешиваем никогда.
+    // Та же марка и линейка. Доработанные (рестомод, реплика) с серийными не смешиваем никогда; особая версия
+    // отличается от обычной сильно, но в «ближайшие» попасть может — с пометкой, если «таких же» мало.
     const hasFlag = (other, code) => (other.flags || []).includes(code);
     const pool = mine.family
       ? this.lots.filter(other => other.id !== lot.id && other.make === lot.make && other.sold !== false
         && this.resolveFamily(other).family === mine.family
-        && hasFlag(other, "modified") === myFlags.has("modified")
-        && hasFlag(other, "special") === myFlags.has("special"))
+        && hasFlag(other, "modified") === myFlags.has("modified"))
       : [];
+    const lotTitle = normalizeTrim(lot.title);
 
     const mileageBand = (miles) => {
       for (const [index, limit] of [5000, 10000, 25000, 50000, 75000, 100000, 150000].entries()) {
@@ -279,7 +280,11 @@ class SoldIndex {
       }
 
       const theirTrim = trimOf(other);
-      if (mine.trim && theirTrim && !sameTrim(mine.trim, theirTrim)) {
+      // Комплектацию площадка и наш разбор называют по-разному («Carrera S» у Collecting Cars и «50th Anniversary Edition» в названии) —
+      // совпадением считаем и то, что одна комплектация названа в заголовке другой машины.
+      const trimsAgree = !mine.trim || !theirTrim || sameTrim(mine.trim, theirTrim)
+        || normalizeTrim(other.title).includes(normalizeTrim(mine.trim)) || lotTitle.includes(normalizeTrim(theirTrim));
+      if (!trimsAgree) {
         distance += 12;
         exact = false;
         differs.push(`комплектация: ${theirTrim}`);
@@ -288,6 +293,11 @@ class SoldIndex {
         distance += 4;
       }
 
+      if (myFlags.has("special") !== hasFlag(other, "special")) {
+        distance += 15;
+        exact = false;
+        differs.push(myFlags.has("special") ? "обычная версия" : "особая версия");
+      }
       if (myCondition && conditionOf(other) !== myCondition) {
         distance += 8;
         exact = false;
@@ -350,6 +360,7 @@ class SoldIndex {
       mine.trim,
       myFlags.has("modified") ? "доработанные" : "серийные",
       myFlags.has("special") ? "особая версия" : "обычная версия",
+      myCondition ? CONDITION_LABELS[myCondition] : null,
       lot.bodyStyle,
       lot.transmissionKind ? (lot.transmissionKind === "manual" ? "механика" : "автомат") : null,
       typeof lot.year === "number" ? `${lot.year - 2}–${lot.year + 2} гг.` : null,

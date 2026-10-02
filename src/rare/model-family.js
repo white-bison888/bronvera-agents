@@ -40,6 +40,8 @@ const buildFamilyResolver = (lots) => {
   const familyLength = (make, words) => {
     let length = 1;
     while (length < Math.min(words.length, MAX_WORDS)) {
+      if (words[length].startsWith("("))
+        break; // «(991)» — шифр поколения, а не часть названия линейки
       const current = prefixCounts.get(`${make}|${words.slice(0, length).join(" ")}`) || 0;
       const next = prefixCounts.get(`${make}|${words.slice(0, length + 1).join(" ")}`) || 0;
       const forced = ALWAYS_EXTEND.has(words[length - 1].toLowerCase());
