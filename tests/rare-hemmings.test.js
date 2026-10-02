@@ -226,3 +226,103 @@ test("run() writes a failed status and rethrows on a non-OK response", async () 
 
   fs.rmSync(dataDir, { recursive: true, force: true });
 });
+
+const soldItem = (id, overrides = {}) => listing({
+  id,
+  status: "sold",
+  current_bid: "$17,000",
+  current_price: "$18,900",
+  sold_at: "2026-10-01T16:17:05-04:00",
+  end_date: "2026-10-01T16:17:05-04:00",
+  ...overrides,
+});
+
+test("updateSoldArchive archives sold listings with the real sale price (current_price, not the last bid)", async () => {
+  const dataDir = tmpDir();
+  const urls = [];
+  const scraper = new HemmingsScraper({
+    dataDir,
+    fetchImpl: async (url) => { urls.push(url); return { ok: true, json: async () => searchResponse([soldItem(7)]) }; },
+    log: () => {},
+  });
+
+  assert.equal(await scraper.updateSoldArchive(), 1);
+
+  const [lot] = scraper.readSold();
+  assert.equal(lot.id, "hemmings-7");
+  assert.equal(lot.salePrice, 18900);
+  assert.equal(lot.sold, true);
+  assert.equal(lot.make, "Ford");
+  assert.equal(lot.year, 1969);
+  assert.equal(lot.soldAt, "2026-10-01T16:17:05-04:00");
+  assert.equal(lot.photoUrl, "https://thumbor-auction.hmn.com/sample-md.jpg");
+  assert.match(decodeURIComponent(urls[0]), /listing_status\[\]=sold/);
+
+  fs.rmSync(dataDir, { recursive: true, force: true });
+});
+
+test("updateSoldArchive keeps accumulating, never duplicates, and stops paging once a page has nothing new", async () => {
+  const dataDir = tmpDir();
+  const pages = [];
+  const fullPage = (from) => Array.from({ length: 50 }, (_, i) => soldItem(from + i));
+  const scraper = new HemmingsScraper({
+    dataDir,
+    fetchImpl: async (url) => {
+      const page = Number(new URL(url).searchParams.get("page"));
+      pages.push(page);
+      return { ok: true, json: async () => searchResponse(page === 1 ? fullPage(1) : page === 2 ? fullPage(51) : fullPage(1)) };
+    },
+    log: () => {},
+  });
+
+  // первый заход: страницы 1 и 2 новые, страница 3 — повтор (ничего нового) → стоп
+  assert.equal(await scraper.updateSoldArchive(), 100);
+  assert.deepEqual(pages, [1, 2, 3]);
+
+  // второй заход: первая же страница уже вся знакома → одна выборка, ничего не добавлено
+  pages.length = 0;
+  assert.equal(await scraper.updateSoldArchive(), 0);
+  assert.deepEqual(pages, [1]);
+  assert.equal(scraper.readSold().length, 100);
+
+  fs.rmSync(dataDir, { recursive: true, force: true });
+});
+
+test("updateSoldArchive skips memorabilia with no real model and items without a price", async () => {
+  const dataDir = tmpDir();
+  const scraper = new HemmingsScraper({
+    dataDir,
+    fetchImpl: async () => ({
+      ok: true,
+      json: async () => searchResponse([
+        soldItem(1),
+        soldItem(2, { model: { name: "Other", slug: "other" } }),
+        soldItem(3, { current_price: null, current_bid: null }),
+      ]),
+    }),
+    log: () => {},
+  });
+
+  await scraper.updateSoldArchive();
+  assert.deepEqual(scraper.readSold().map(l => l.id), ["hemmings-1"]);
+
+  fs.rmSync(dataDir, { recursive: true, force: true });
+});
+
+test("run() still succeeds when the sold-archive fetch fails", async () => {
+  const dataDir = tmpDir();
+  const scraper = new HemmingsScraper({
+    dataDir,
+    fetchImpl: async (url) => decodeURIComponent(url).includes("listing_status[]=sold")
+      ? { ok: false, status: 500 }
+      : { ok: true, json: async () => searchResponse([listing()]) },
+    log: () => {},
+  });
+
+  const lots = await scraper.run();
+  assert.equal(lots.length, 1);
+  assert.equal(scraper.readStatus().ok, true);
+  assert.deepEqual(scraper.readSold(), []);
+
+  fs.rmSync(dataDir, { recursive: true, force: true });
+});

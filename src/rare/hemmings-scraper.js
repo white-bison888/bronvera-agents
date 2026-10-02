@@ -1,5 +1,6 @@
 const fs = require("fs");
 const path = require("path");
+const { loadSoldArchive, saveSoldArchive, yearFromTitle } = require("./sold-archive");
 
 /*
  * BRONVERA Rare, Фаза 3 (01.10.2026): пятая площадка — Hemmings
@@ -18,6 +19,8 @@ const path = require("path");
 
 const LISTINGS_URL = "https://api.hemmings.com/v2/search/listings";
 const CLOSING_SOON_MS = 48 * 3600 * 1000;
+const SOLD_PER_PAGE = 50;
+const SOLD_MAX_PAGES = 20; // потолок на один заход: первый раз добираем историю, дальше хватает одной-двух страниц
 
 /*
  * Публичный ключ фронтенда Hemmings, не секрет учётной записи — его
@@ -83,6 +86,38 @@ const toRareLot = (item, now) => {
   };
 };
 
+/*
+ * Вкладка Stats (02.10.2026, просьба Mikita): архив проданных лотов — не
+ * через Cloudflare (который на hemmings.com блокирует даже headless-
+ * браузер с хорошим прокси, проверено), а через тот же открытый
+ * api.hemmings.com с параметром listing_status[]=sold, который до этого
+ * не пробовали (угаданные значения вроде status=sold/closed молча
+ * игнорировались API). current_price — настоящая цена сделки, отличается
+ * от current_bid (вероятно, с учётом комиссии). Лоты, закрывшиеся без
+ * продажи (резерв не достигнут), этим путём не найдены — у listing_status
+ * есть значение reserve_not_met, но оно отдаёт ещё идущие торги
+ * (status: "live"), не завершённые без сделки; архивируем только
+ * подтверждённые продажи.
+ */
+const toSoldLot = item => ({
+  id: `hemmings-${item.id}`,
+  title: item.long_title || item.title,
+  make: item.make?.name || null,
+  model: item.model?.name || null,
+  year: item.year || yearFromTitle(item.title),
+  source: "Hemmings",
+  sourceUrl: item.url,
+  soldAt: item.sold_at || item.end_date || null,
+  salePrice: parseMoney(item.current_price) ?? parseMoney(item.current_bid),
+  sold: true,
+  estimateMin: null,
+  estimateMax: null,
+  mileage: null, // не в выдаче — только на странице самого лота
+  transmission: null,
+  conditionFacts: [],
+  photoUrl: item.thumbnail?.md?.["4:3"] || item.thumbnail?.md?.full || null,
+});
+
 class HemmingsScraper {
   constructor({
     fetchImpl = fetch,
@@ -96,6 +131,14 @@ class HemmingsScraper {
 
   lotsFile() {
     return path.join(this.dataDir, "lots.json");
+  }
+
+  soldFile() {
+    return path.join(this.dataDir, "sold.json");
+  }
+
+  readSold() {
+    return Object.values(loadSoldArchive(this.soldFile()));
   }
 
   statusFile() {
@@ -167,6 +210,66 @@ class HemmingsScraper {
     return items.filter(item => item.model?.slug !== "other");
   }
 
+  /*
+   * Выдача listing_status[]=sold идёт от свежих продаж к старым (sort_by
+   * API игнорирует, порядок один и тот же). Поэтому листаем, пока на
+   * странице есть хоть один лот, которого ещё нет в архиве — как только
+   * страница целиком уже знакомая, дальше идти незачем.
+   */
+  async fetchSoldPage(page) {
+    const params = new URLSearchParams({
+      adtype: "cars-for-sale",
+      "listing_type[]": "hemmings_auctions_only",
+      "listing_status[]": "sold",
+      distance: "50",
+      page: String(page),
+      per_page: String(SOLD_PER_PAGE),
+      members_preview: "false",
+    });
+
+    const response = await this.fetchImpl(`${LISTINGS_URL}?${params}`, { headers: HEMMINGS_HEADERS });
+
+    if (!response.ok)
+      throw new Error(`Hemmings (проданные, страница ${page}) ответил ${response.status}`);
+
+    const data = await response.json();
+    return data.results || [];
+  }
+
+  async updateSoldArchive() {
+    const archive = loadSoldArchive(this.soldFile());
+    let added = 0;
+
+    for (let page = 1; page <= SOLD_MAX_PAGES; page += 1) {
+      const items = await this.fetchSoldPage(page);
+      let newOnPage = 0;
+
+      for (const item of items) {
+        if (item.model?.slug === "other") // таблички/вывески/часы — см. fetchActiveListings
+          continue;
+        const soldLot = toSoldLot(item);
+        if (typeof soldLot.salePrice !== "number")
+          continue;
+        if (!archive[soldLot.id]) {
+          archive[soldLot.id] = soldLot;
+          newOnPage += 1;
+        }
+      }
+
+      added += newOnPage;
+
+      if (items.length < SOLD_PER_PAGE || newOnPage === 0)
+        break;
+    }
+
+    if (added > 0) {
+      saveSoldArchive(this.soldFile(), archive);
+      this.log(`BRONVERA Rare: добавил ${added} проданных лотов Hemmings в архив (всего ${Object.keys(archive).length})`);
+    }
+
+    return added;
+  }
+
   async run() {
     const now = this.now();
     const previousIds = new Set(this.readLots().lots.map(lot => lot.id));
@@ -184,6 +287,8 @@ class HemmingsScraper {
       );
 
       this.writeStatus({ source: "Hemmings", lastRunAt: new Date(now).toISOString(), ok: true, count: lots.length, error: null });
+
+      await this.updateSoldArchive().catch(error => this.log("BRONVERA Rare: не добрал архив продаж Hemmings:", error.message));
 
       if (this.alerts) {
         const newLots = lots.filter(lot => !previousIds.has(lot.id));
