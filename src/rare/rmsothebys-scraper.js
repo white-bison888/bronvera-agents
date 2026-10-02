@@ -1,6 +1,7 @@
 const fs = require("fs");
 const path = require("path");
 const { guessMake, guessModel } = require("./title-parser");
+const { loadSoldArchive, saveSoldArchive, yearFromTitle } = require("./sold-archive");
 
 /*
  * BRONVERA Rare, Фаза 3 (01.10.2026): третья площадка — RM Sotheby's.
@@ -30,6 +31,10 @@ const UPCOMING_URL = `${BASE_URL}/upcoming/`;
 const SEARCH_API = `${BASE_URL}/api/search/SearchLots`;
 const PAGE_SIZE = 100;
 const CLOSING_SOON_MS = 48 * 3600 * 1000;
+const RESULTS_URL = `${BASE_URL}/results/`; // свежие итоги этого сезона
+const PAST_AUCTIONS_URL = `${BASE_URL}/past-auctions/`; // весь архив торгов
+const SETTLE_MS = 3 * 24 * 3600 * 1000; // через столько после конца аукциона итоги считаем окончательными и больше не перепроверяем
+const MAX_AUCTIONS_PER_RUN = 40; // за один заход берём не больше аукционов — архив добирается постепенно, а не одним залпом запросов
 
 // «$150,000 - $175,000 USD» — всегда первой строкой в мультивалютном блоке на странице лота, независимо от родной валюты лота.
 const parseUsdEstimate = (html) => {
@@ -61,6 +66,67 @@ const statusOf = (closesAt, now) => {
   if (end - now <= CLOSING_SOON_MS)
     return "closing";
   return "open";
+};
+
+/*
+ * Вкладка Stats (02.10.2026): итоги прошедших торгов. Тот же SearchLots, что
+ * для будущих аукционов, но у завершённых лотов в value стоит цена продажи
+ * («$56,000 USD», «£15,525 GBP», «€92,000 EUR», «CHF71,300»), а valueType —
+ * «Sold». У «Not Sold» в value диапазон оценки, не ставка — цены сделки нет,
+ * не архивируем; у закрытых (Sealed) торгов цена не публикуется вовсе. Цена RM
+ * включает комиссию покупателя — у части других площадок (например, Bring a
+ * Trailer) «Sold for» это цена молотка без неё, прямо сравнивать осторожно.
+ * Курс фиксированный на 01.10.2026, как у Collecting Cars; исходную цену и
+ * валюту храним рядом.
+ */
+const FX_TO_USD = { USD: 1, GBP: 1.32338, EUR: 1.12979, CHF: 1.1972 };
+const CURRENCY_BY_SYMBOL = { "$": "USD", "£": "GBP", "€": "EUR", "CHF": "CHF" };
+
+const parseSoldValue = (value) => {
+  const text = String(value || "").trim();
+  if (text.includes(" - "))
+    return null; // диапазон оценки, не цена продажи
+  const match = text.match(/^(\$|£|€|CHF)\s?([\d,]+)/);
+  if (!match)
+    return null;
+  const currency = CURRENCY_BY_SYMBOL[match[1]];
+  const amount = Number(match[2].replace(/,/g, ""));
+  return Number.isFinite(amount) && amount > 0 ? { amount, currency } : null;
+};
+
+const toSoldLot = (item, endDate, code) => {
+  if (item.valueType !== "Sold" || !item.sold || !endDate)
+    return null;
+
+  const price = parseSoldValue(item.value);
+  const year = yearFromTitle(item.publicName); // без года — не автомобиль (афиши, сувениры в категории Cars)
+  if (!price || !year)
+    return null;
+
+  const title = item.publicName;
+  const make = guessMake(title);
+
+  return {
+    id: `rmsothebys-${item.id}`,
+    title,
+    make,
+    model: guessModel(title, make),
+    year,
+    source: "RM Sotheby's",
+    sourceUrl: item.link,
+    soldAt: `${endDate}T00:00:00.000Z`, // у каждого лота своей даты нет — день окончания аукциона
+    salePrice: Math.round(price.amount * FX_TO_USD[price.currency]),
+    salePriceLocal: price.amount,
+    currency: price.currency,
+    auctionCode: code,
+    sold: true,
+    estimateMin: null,
+    estimateMax: null,
+    mileage: null,
+    transmission: null,
+    conditionFacts: [],
+    photoUrl: item.crop || null,
+  };
 };
 
 const toRareLot = (item, closesAt) => {
@@ -104,6 +170,18 @@ class RmSothebysScraper {
 
   detailsFile() {
     return path.join(this.dataDir, "lot-details.json");
+  }
+
+  soldFile() {
+    return path.join(this.dataDir, "sold.json");
+  }
+
+  soldAuctionsFile() {
+    return path.join(this.dataDir, "sold-auctions.json");
+  }
+
+  readSold() {
+    return Object.values(loadSoldArchive(this.soldFile()));
   }
 
   statusFile() {
@@ -268,6 +346,95 @@ class RmSothebysScraper {
     return cache;
   }
 
+  async fetchCodesFrom(url) {
+    const response = await this.fetchImpl(url, {
+      headers: { "User-Agent": "Mozilla/5.0 (compatible; BRONVERA-Rare/1.0)" },
+    });
+
+    if (!response.ok)
+      throw new Error(`RM Sotheby's (${url}) ответил ${response.status}`);
+
+    const html = await response.text();
+    return [...new Set([...html.matchAll(/\/auctions\/([a-z0-9]+)\/lots\//gi)].map(m => m[1].toLowerCase()))];
+  }
+
+  loadSoldAuctions() {
+    try {
+      return JSON.parse(fs.readFileSync(this.soldAuctionsFile(), "utf8"));
+    }
+    catch {
+      return {};
+    }
+  }
+
+  /*
+   * Аукцион «закрыт для проверки», когда его итоги уже окончательные:
+   * прошло SETTLE_MS после последнего дня, а проверяли мы его уже после
+   * этого. Свежие аукционы перепроверяем каждый заход — часть лотов
+   * подводит итог не в тот же день. Если даты у аукциона нет, лотам
+   * нечего подставить в soldAt — проверили раз и больше не трогаем.
+   */
+  isSettled(entry, now) {
+    if (!entry)
+      return false;
+    if (!entry.endDate)
+      return true;
+    const settledAt = Date.parse(`${entry.endDate}T23:59:59Z`) + SETTLE_MS;
+    return now > settledAt && Date.parse(entry.checkedAt) > settledAt;
+  }
+
+  async updateSoldArchive({ maxAuctions = MAX_AUCTIONS_PER_RUN } = {}) {
+    const now = this.now();
+    const archive = loadSoldArchive(this.soldFile());
+    const auctions = this.loadSoldAuctions();
+
+    // Свежие итоги — первыми, потом весь архив торгов (его страница тяжёлая и может отвалиться — не страшно).
+    const codes = await this.fetchCodesFrom(RESULTS_URL);
+    try {
+      for (const code of await this.fetchCodesFrom(PAST_AUCTIONS_URL)) {
+        if (!codes.includes(code))
+          codes.push(code);
+      }
+    }
+    catch (error) {
+      this.log("BRONVERA Rare: не прочитал список прошедших аукционов RM Sotheby's:", error.message);
+    }
+
+    const pending = codes.filter(code => !this.isSettled(auctions[code], now)).slice(0, maxAuctions);
+    let added = 0;
+
+    for (const code of pending) {
+      try {
+        const items = await this.fetchAuctionCarLots(code);
+        const closesAt = await this.fetchAuctionClosesAt(code); // и у аукциона без машин — иначе пустой ответ «закрыл» бы свежие торги навсегда
+        const endDate = closesAt ? closesAt.slice(0, 10) : null;
+
+        for (const item of items) {
+          const soldLot = toSoldLot(item, endDate, code);
+          if (soldLot && !archive[soldLot.id]) {
+            archive[soldLot.id] = soldLot;
+            added += 1;
+          }
+        }
+
+        auctions[code] = { endDate, checkedAt: new Date(now).toISOString() };
+      }
+      catch (error) {
+        this.log(`BRONVERA Rare: не собрал итоги RM Sotheby's ${code}: ${error.message}`);
+      }
+    }
+
+    fs.mkdirSync(this.dataDir, { recursive: true });
+    fs.writeFileSync(this.soldAuctionsFile(), JSON.stringify(auctions, null, 2));
+
+    if (added > 0) {
+      saveSoldArchive(this.soldFile(), archive);
+      this.log(`BRONVERA Rare: добавил ${added} проданных лотов RM Sotheby's в архив (всего ${Object.keys(archive).length})`);
+    }
+
+    return added;
+  }
+
   async run() {
     const now = this.now();
     const previousIds = new Set(this.readLots().lots.map(lot => lot.id));
@@ -289,6 +456,8 @@ class RmSothebysScraper {
       );
 
       this.writeStatus({ source: "RM Sotheby's", lastRunAt: new Date(now).toISOString(), ok: true, count: enriched.length, error: null });
+
+      await this.updateSoldArchive().catch(error => this.log("BRONVERA Rare: не добрал архив продаж RM Sotheby's:", error.message));
 
       if (this.alerts) {
         const newLots = enriched.filter(lot => !previousIds.has(lot.id));
