@@ -1023,6 +1023,24 @@ app.get("/api/rare/lots", (req, res) => {
 });
 
 /*
+ * Вкладка Stats (02.10.2026, просьба Mikita: «очень важно получить
+ * правильную финальную стоимость лота») — реальная история проданных
+ * лотов вместо примерных данных. Источники со своим архивом (readSold):
+ * Bring a Trailer, PCARMARKET, Cars & Bids. RM Sotheby's своей ставки не
+ * знает вовсе, Hemmings/Collecting Cars результатов пока не отдают —
+ * у них просто нет readSold, пропускаем без ошибки. Сортировка — от
+ * недавних продаж к старым, самое интересное сайту показывать первым.
+ */
+app.get("/api/rare/sold", (req, res) => {
+  const sold = rareSources
+    .filter(({ scraper }) => typeof scraper.readSold === "function")
+    .flatMap(({ scraper }) => scraper.readSold())
+    .sort((a, b) => new Date(b.soldAt || 0) - new Date(a.soldAt || 0));
+
+  res.json({ success: true, count: sold.length, lots: sold });
+});
+
+/*
  * Вкладка Status на сайте (01.10.2026): статус реально подключённых
  * источников. Остальные площадки из aggregator-approach.md сайт
  * показывает сам как «ещё не подключены», без записи здесь.

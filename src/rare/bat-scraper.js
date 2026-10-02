@@ -2,6 +2,7 @@ const fs = require("fs");
 const path = require("path");
 const { describeTransmission } = require("./transmission");
 const { guessMake, guessModel } = require("./title-parser");
+const { loadSoldArchive, saveSoldArchive, yearFromTitle } = require("./sold-archive");
 
 /*
  * BRONVERA Rare, Фаза 1 (план 30.09.2026): первая реальная площадка —
@@ -145,6 +146,33 @@ const toRareLot = (item, now) => {
   };
 };
 
+/*
+ * Вкладка Stats (02.10.2026, просьба Mikita): архив проданных лотов,
+ * отдельно от lots.json — активный список перезаписывается целиком на
+ * каждом прогоне и теряет лот, как только он выпадает из «/auctions/»
+ * BaT (проверено: закрытый лот пропадает из индекса в течение суток).
+ * sold: null (ещё не знаем исход — см. needsResult в fetchMissingDetails)
+ * сюда не идёт: архивируем только то, что действительно разрешилось.
+ */
+const toSoldLot = enrichedLot => ({
+  id: enrichedLot.id,
+  title: enrichedLot.title,
+  make: enrichedLot.make,
+  model: enrichedLot.model,
+  year: yearFromTitle(enrichedLot.title),
+  source: enrichedLot.source,
+  sourceUrl: enrichedLot.sourceUrl,
+  soldAt: enrichedLot.closesAt,
+  salePrice: enrichedLot.currentBid,
+  sold: enrichedLot.sold,
+  estimateMin: enrichedLot.estimateMin,
+  estimateMax: enrichedLot.estimateMax,
+  mileage: enrichedLot.mileage,
+  transmission: enrichedLot.transmission,
+  conditionFacts: [],
+  photoUrl: enrichedLot.photoUrl,
+});
+
 class BatScraper {
   constructor({
     fetchImpl = fetch,
@@ -162,6 +190,36 @@ class BatScraper {
 
   detailsFile() {
     return path.join(this.dataDir, "lot-details.json");
+  }
+
+  soldFile() {
+    return path.join(this.dataDir, "sold.json");
+  }
+
+  readSold() {
+    return Object.values(loadSoldArchive(this.soldFile()));
+  }
+
+  /* Архив копится: каждый разрешённый (sold: true/false, не null) лот добавляется один раз. */
+  updateSoldArchive(enriched) {
+    const archive = loadSoldArchive(this.soldFile());
+    let added = 0;
+
+    for (const lot of enriched) {
+      if (lot.status !== "ended" || lot.sold === null || lot.sold === undefined || typeof lot.currentBid !== "number")
+        continue;
+      if (!archive[lot.id]) {
+        archive[lot.id] = toSoldLot(lot);
+        added += 1;
+      }
+    }
+
+    if (added) {
+      saveSoldArchive(this.soldFile(), archive);
+      this.log(`BRONVERA Rare: добавил ${added} проданных лотов BaT в архив (всего ${Object.keys(archive).length})`);
+    }
+
+    return added;
   }
 
   statusFile() {
@@ -321,6 +379,8 @@ class BatScraper {
       );
 
       this.writeStatus({ source: "Bring a Trailer", lastRunAt: new Date(now).toISOString(), ok: true, count: enriched.length, error: null });
+
+      this.updateSoldArchive(enriched);
 
       if (this.alerts) {
         const newLots = enriched.filter(lot => !previousIds.has(lot.id));
