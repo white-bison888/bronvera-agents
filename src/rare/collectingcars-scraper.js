@@ -3,6 +3,7 @@ const path = require("path");
 const { applyLiteBrowsing } = require("../providers/lite-browsing");
 const { meterBrowserContext } = require("../costs/ledger");
 const { guessMake, guessModel } = require("./title-parser");
+const { loadSoldArchive, saveSoldArchive, yearFromTitle } = require("./sold-archive");
 
 /*
  * BRONVERA Rare, Фаза 3 (01.10.2026): шестая площадка — Collecting Cars.
@@ -19,6 +20,9 @@ const { guessMake, guessModel } = require("./title-parser");
  */
 
 const BUY_URL = "https://collectingcars.com/buy";
+const SEARCH_URL = "https://dora.production.collecting.com/multi_search";
+const SOLD_PER_PAGE = 250;
+const SOLD_MAX_PAGES = 8; // потолок на один заход: первый раз добираем историю (до 2000 лотов), дальше хватает одной страницы
 const CLOSING_SOON_MS = 48 * 3600 * 1000;
 
 // Курс ЕЦБ/api.frankfurter.dev на 01.10.2026, см. costs/prices.js (eurUsd) — тот же источник, не обновляется сам.
@@ -28,6 +32,16 @@ const FX_TO_USD = {
   "€": 1.12979, // 1 / 0.88511 EUR
   "A$": 0.69505, // 1 / 1.4388 AUD
   "NZ$": 0.56153, // 1 / 1.7809 NZD
+};
+
+// Для архива продаж: у проданных лотов валюта приходит кодом (gbp/aud/…), не знаком — тот же курс на 01.10.2026.
+const FX_BY_CODE = {
+  usd: 1,
+  gbp: FX_TO_USD["£"],
+  eur: FX_TO_USD["€"],
+  aud: FX_TO_USD["A$"],
+  nzd: FX_TO_USD["NZ$"],
+  chf: 1.1972, // 1 / 0.83528 CHF
 };
 
 const parsePriceUsd = (text) => {
@@ -85,6 +99,51 @@ const toRareLot = (card, now) => {
   };
 };
 
+/*
+ * Вкладка Stats (02.10.2026, просьба Mikita): проданные лоты — не через
+ * Cloudflare (страницы закрыты), а через тот же Typesense-поиск, которым
+ * пользуется сама страница /sold (dora.production.collecting.com). Ключ —
+ * поисковый ключ фронтенда, виден в любом запросе браузера к сайту, не
+ * учётная запись; запросы идут напрямую, без прокси и браузера. Из индекса
+ * берём только машины (не номера, запчасти, мотоциклы) и только аукционы
+ * (не «купить сейчас») — в индексе нет стадии «не продан», только
+ * подтверждённые продажи. Цена приходит в валюте лота: пересчитываем в USD
+ * по фиксированному курсу, а исходную цену и валюту храним рядом.
+ */
+const SEARCH_KEY = "0I2WvLvRUeeHNaDV74u0KRlkLnhhgH9S";
+
+const SOLD_FIELDS = "id,slug,title,mainImageUrl,currencyCode,priceSold,isSoldPriceHidden,saleFormat,lotType,productMake,productYear,modelName,dtSoldUTC,tsSoldUTC";
+
+const toSoldLot = (doc) => {
+  const rate = FX_BY_CODE[String(doc.currencyCode || "").toLowerCase()];
+  if (!rate || typeof doc.priceSold !== "number" || doc.isSoldPriceHidden)
+    return null;
+
+  const make = doc.productMake || guessMake(doc.title);
+  const year = Number(doc.productYear);
+
+  return {
+    id: `collectingcars-${doc.slug}`,
+    title: doc.title,
+    make,
+    model: guessModel(doc.title, make) || doc.modelName || null,
+    year: Number.isFinite(year) && year > 1800 ? year : yearFromTitle(doc.title),
+    source: "Collecting Cars",
+    sourceUrl: `https://collectingcars.com/for-sale/${doc.slug}`,
+    soldAt: doc.dtSoldUTC ? `${doc.dtSoldUTC.replace(" ", "T")}Z` : null,
+    salePrice: Math.round(doc.priceSold * rate),
+    salePriceLocal: doc.priceSold,
+    currency: String(doc.currencyCode).toUpperCase(),
+    sold: true,
+    estimateMin: null,
+    estimateMax: null,
+    mileage: null,
+    transmission: null,
+    conditionFacts: [],
+    photoUrl: doc.mainImageUrl || null,
+  };
+};
+
 class CollectingCarsScraper {
   constructor({
     dataDir = path.join(process.cwd(), "data", "rare", "collectingcars"),
@@ -92,8 +151,17 @@ class CollectingCarsScraper {
     log = (...args) => console.log(...args),
     alerts = null,
     fetchCards = null, // переопределяется в тестах — () => [{ href, imgAlt, imgSrc, text }, ...], без Playwright
+    fetchImpl = fetch,
   } = {}) {
-    Object.assign(this, { dataDir, now, log, alerts, fetchCards });
+    Object.assign(this, { dataDir, now, log, alerts, fetchCards, fetchImpl });
+  }
+
+  soldFile() {
+    return path.join(this.dataDir, "sold.json");
+  }
+
+  readSold() {
+    return Object.values(loadSoldArchive(this.soldFile()));
   }
 
   lotsFile() {
@@ -204,6 +272,71 @@ class CollectingCarsScraper {
     }
   }
 
+  async fetchSoldPage(page) {
+    const response = await this.fetchImpl(`${SEARCH_URL}?x-typesense-api-key=${SEARCH_KEY}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        searches: [{
+          collection: "production_listings",
+          q: "*",
+          query_by: "title",
+          include_fields: SOLD_FIELDS,
+          filter_by: "(listingStage:sold) && sites:=cars && lotType:car && saleFormat:auction",
+          sort_by: "tsSoldUTC:desc",
+          page,
+          per_page: SOLD_PER_PAGE,
+        }],
+      }),
+    });
+
+    if (!response.ok)
+      throw new Error(`Collecting Cars (проданные, страница ${page}) ответил ${response.status}`);
+
+    const data = await response.json();
+    const result = data.results?.[0];
+
+    if (result?.error)
+      throw new Error(`Collecting Cars (проданные): ${result.error}`);
+
+    return (result?.hits || []).map(hit => hit.document);
+  }
+
+  /*
+   * Выдача идёт от свежих продаж к старым: листаем, пока на странице есть
+   * хоть один лот, которого ещё нет в архиве, — полностью знакомая
+   * страница значит, что дальше всё уже собрано.
+   */
+  async updateSoldArchive() {
+    const archive = loadSoldArchive(this.soldFile());
+    let added = 0;
+
+    for (let page = 1; page <= SOLD_MAX_PAGES; page += 1) {
+      const docs = await this.fetchSoldPage(page);
+      let newOnPage = 0;
+
+      for (const doc of docs) {
+        const soldLot = toSoldLot(doc);
+        if (soldLot && !archive[soldLot.id]) {
+          archive[soldLot.id] = soldLot;
+          newOnPage += 1;
+        }
+      }
+
+      added += newOnPage;
+
+      if (docs.length < SOLD_PER_PAGE || newOnPage === 0)
+        break;
+    }
+
+    if (added > 0) {
+      saveSoldArchive(this.soldFile(), archive);
+      this.log(`BRONVERA Rare: добавил ${added} проданных лотов Collecting Cars в архив (всего ${Object.keys(archive).length})`);
+    }
+
+    return added;
+  }
+
   async run() {
     const now = this.now();
     const previousIds = new Set(this.readLots().lots.map(lot => lot.id));
@@ -223,6 +356,8 @@ class CollectingCarsScraper {
       );
 
       this.writeStatus({ source: "Collecting Cars", lastRunAt: new Date(now).toISOString(), ok: true, count: lots.length, error: null });
+
+      await this.updateSoldArchive().catch(error => this.log("BRONVERA Rare: не добрал архив продаж Collecting Cars:", error.message));
 
       if (this.alerts) {
         const newLots = lots.filter(lot => !previousIds.has(lot.id));

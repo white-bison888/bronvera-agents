@@ -8,6 +8,10 @@ const CollectingCarsScraper = require("../src/rare/collectingcars-scraper");
 
 const tmpDir = () => fs.mkdtempSync(path.join(os.tmpdir(), "bronvera-rare-collectingcars-"));
 
+// Архив продаж ходит в сеть сам — в тестах про активные лоты подсовываем пустой ответ, чтобы не лезть наружу.
+const soldResponse = docs => ({ ok: true, json: async () => ({ results: [{ hits: docs.map(document => ({ document })) }] }) });
+const noSold = async () => soldResponse([]);
+
 const card = (overrides = {}) => ({
   href: "/for-sale/2021-mercedes-amg-w213-e63-s-estate-1",
   imgAlt: "2021 Mercedes-AMG (W213) E63 S Estate",
@@ -18,7 +22,7 @@ const card = (overrides = {}) => ({
 
 test("run() maps a card to a RareLot, converting its native currency to USD", async () => {
   const dataDir = tmpDir();
-  const scraper = new CollectingCarsScraper({ dataDir, fetchCards: async () => [card()], log: () => {} });
+  const scraper = new CollectingCarsScraper({ fetchImpl: noSold, dataDir, fetchCards: async () => [card()], log: () => {} });
 
   const lots = await scraper.run();
   assert.equal(lots.length, 1);
@@ -35,7 +39,7 @@ test("run() maps a card to a RareLot, converting its native currency to USD", as
 
 test("run() converts every currency symbol seen on the site (£, €, A$, NZ$, US$)", async () => {
   const dataDir = tmpDir();
-  const scraper = new CollectingCarsScraper({
+  const scraper = new CollectingCarsScraper({ fetchImpl: noSold,
     dataDir,
     fetchCards: async () => [
       card({ href: "/for-sale/a", imgAlt: "Car A", text: "CURRENT BID\n\nA$41,250\n\n12:20:36\nWhyalla, SA\n62 Bids" }),
@@ -58,7 +62,7 @@ test("run() converts every currency symbol seen on the site (£, €, A$, NZ$, U
 test("run() computes closesAt from the live countdown, not a fixed date", async () => {
   const dataDir = tmpDir();
   const now = Date.parse("2026-10-01T12:00:00Z");
-  const scraper = new CollectingCarsScraper({
+  const scraper = new CollectingCarsScraper({ fetchImpl: noSold,
     dataDir,
     now: () => now,
     fetchCards: async () => [card({ text: "CURRENT BID\n\n£1,000\n\n01:30:00\nLondon\n1 Bids" })],
@@ -72,7 +76,7 @@ test("run() computes closesAt from the live countdown, not a fixed date", async 
 
 test("run() skips cards without a recognisable price/countdown block", async () => {
   const dataDir = tmpDir();
-  const scraper = new CollectingCarsScraper({
+  const scraper = new CollectingCarsScraper({ fetchImpl: noSold,
     dataDir,
     fetchCards: async () => [
       card(),
@@ -91,7 +95,7 @@ test("run() reports only genuinely new lots to alerts.checkAfterRun", async () =
   const calls = [];
   const alerts = { checkAfterRun: async (args) => { calls.push(args); } };
 
-  const scraper = new CollectingCarsScraper({
+  const scraper = new CollectingCarsScraper({ fetchImpl: noSold,
     dataDir,
     alerts,
     fetchCards: async () => [card()],
@@ -113,7 +117,7 @@ test("run() reports only genuinely new lots to alerts.checkAfterRun", async () =
 
 test("run() writes a failed status and rethrows when fetching fails", async () => {
   const dataDir = tmpDir();
-  const scraper = new CollectingCarsScraper({
+  const scraper = new CollectingCarsScraper({ fetchImpl: noSold,
     dataDir,
     fetchCards: async () => { throw new Error("прокси недоступен"); },
     log: () => {},
@@ -123,6 +127,102 @@ test("run() writes a failed status and rethrows when fetching fails", async () =
   const status = scraper.readStatus();
   assert.equal(status.ok, false);
   assert.match(status.error, /прокси/);
+
+  fs.rmSync(dataDir, { recursive: true, force: true });
+});
+
+const soldDoc = (n, overrides = {}) => ({
+  id: String(n),
+  slug: `2012-bentley-continental-gtc-v8-${n}`,
+  title: "2012 Bentley Continental GTC V8",
+  mainImageUrl: "https://images.collectingcars.com/091987/2-9-26KR9.jpg",
+  currencyCode: "aud",
+  priceSold: 80100,
+  isSoldPriceHidden: false,
+  saleFormat: "auction",
+  lotType: "car",
+  productMake: "Bentley",
+  productYear: "2012",
+  modelName: "Continental GT",
+  dtSoldUTC: "2026-10-02 06:47:24",
+  tsSoldUTC: 1790923644,
+  ...overrides,
+});
+
+test("updateSoldArchive archives a sold car, converting the sale price to USD and keeping the original", async () => {
+  const dataDir = tmpDir();
+  const requests = [];
+  const scraper = new CollectingCarsScraper({ dataDir, log: () => {} });
+  scraper.fetchImpl = async (url, init) => { requests.push({ url, body: JSON.parse(init.body) }); return soldResponse([soldDoc(1)]); };
+
+  assert.equal(await scraper.updateSoldArchive(), 1);
+
+  const [lot] = scraper.readSold();
+  assert.equal(lot.id, "collectingcars-2012-bentley-continental-gtc-v8-1");
+  assert.equal(lot.sourceUrl, "https://collectingcars.com/for-sale/2012-bentley-continental-gtc-v8-1");
+  assert.equal(lot.make, "Bentley");
+  assert.equal(lot.year, 2012);
+  assert.equal(lot.salePrice, Math.round(80100 * 0.69505));
+  assert.equal(lot.salePriceLocal, 80100);
+  assert.equal(lot.currency, "AUD");
+  assert.equal(lot.sold, true);
+  assert.equal(lot.soldAt, "2026-10-02T06:47:24Z");
+  assert.equal(lot.photoUrl, "https://images.collectingcars.com/091987/2-9-26KR9.jpg");
+  assert.match(requests[0].url, /multi_search/);
+  assert.match(requests[0].body.searches[0].filter_by, /listingStage:sold/);
+  assert.match(requests[0].body.searches[0].filter_by, /lotType:car/);
+  assert.match(requests[0].body.searches[0].filter_by, /saleFormat:auction/);
+
+  fs.rmSync(dataDir, { recursive: true, force: true });
+});
+
+test("updateSoldArchive skips hidden prices and currencies it has no rate for", async () => {
+  const dataDir = tmpDir();
+  const scraper = new CollectingCarsScraper({ dataDir, log: () => {} });
+  scraper.fetchImpl = async () => soldResponse([
+    soldDoc(1),
+    soldDoc(2, { isSoldPriceHidden: true }),
+    soldDoc(3, { currencyCode: "sek" }),
+    soldDoc(4, { priceSold: null }),
+  ]);
+
+  await scraper.updateSoldArchive();
+  assert.deepEqual(scraper.readSold().map(l => l.id), ["collectingcars-2012-bentley-continental-gtc-v8-1"]);
+
+  fs.rmSync(dataDir, { recursive: true, force: true });
+});
+
+test("updateSoldArchive pages until a page has nothing new, and never duplicates", async () => {
+  const dataDir = tmpDir();
+  const pages = [];
+  const fullPage = from => Array.from({ length: 250 }, (_, i) => soldDoc(from + i));
+  const scraper = new CollectingCarsScraper({ dataDir, log: () => {} });
+  scraper.fetchImpl = async (url, init) => {
+    const page = JSON.parse(init.body).searches[0].page;
+    pages.push(page);
+    return soldResponse(page === 1 ? fullPage(1) : page === 2 ? fullPage(251) : fullPage(1));
+  };
+
+  assert.equal(await scraper.updateSoldArchive(), 500);
+  assert.deepEqual(pages, [1, 2, 3]);
+
+  pages.length = 0;
+  assert.equal(await scraper.updateSoldArchive(), 0);
+  assert.deepEqual(pages, [1]);
+  assert.equal(scraper.readSold().length, 500);
+
+  fs.rmSync(dataDir, { recursive: true, force: true });
+});
+
+test("run() still succeeds when the sold-archive request fails", async () => {
+  const dataDir = tmpDir();
+  const scraper = new CollectingCarsScraper({ dataDir, fetchCards: async () => [card()], log: () => {} });
+  scraper.fetchImpl = async () => ({ ok: false, status: 500 });
+
+  const lots = await scraper.run();
+  assert.equal(lots.length, 1);
+  assert.equal(scraper.readStatus().ok, true);
+  assert.deepEqual(scraper.readSold(), []);
 
   fs.rmSync(dataDir, { recursive: true, force: true });
 });
