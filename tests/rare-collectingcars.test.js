@@ -8,21 +8,63 @@ const CollectingCarsScraper = require("../src/rare/collectingcars-scraper");
 
 const tmpDir = () => fs.mkdtempSync(path.join(os.tmpdir(), "bronvera-rare-collectingcars-"));
 
-// Архив продаж ходит в сеть сам — в тестах про активные лоты подсовываем пустой ответ, чтобы не лезть наружу.
-const soldResponse = docs => ({ ok: true, json: async () => ({ results: [{ hits: docs.map(document => ({ document })) }] }) });
-const noSold = async () => soldResponse([]);
+const hitsResponse = (docs, found = docs.length) => ({
+  ok: true,
+  json: async () => ({ results: [{ found, hits: docs.map(document => ({ document })) }] }),
+});
 
-const card = (overrides = {}) => ({
-  href: "/for-sale/2021-mercedes-amg-w213-e63-s-estate-1",
-  imgAlt: "2021 Mercedes-AMG (W213) E63 S Estate",
-  imgSrc: "https://images.collectingcars.com/090968/AS-03-08-08.jpg?w=3840&q=75",
-  text: "NO RESERVE\nBOOSTED\n2021 MERCEDES-AMG (W213) E63 S ESTATE\n\nCURRENT BID\n\n£54,000\n\n00:02:56\nLONDON\n36 BIDS",
+/*
+ * Поддельный поиск Collecting Cars: по стадии в filter_by отдаёт либо
+ * «идущие» (live), либо «проданные» (sold) документы — по страницам, как
+ * настоящий Typesense. Все запросы складываются в requests.
+ */
+const fakeSearch = ({ live = [], sold = [] } = {}) => {
+  const requests = [];
+  const fetchImpl = async (url, init) => {
+    const search = JSON.parse(init.body).searches[0];
+    requests.push({ url, search });
+    const source = search.filter_by.includes("listingStage:live") ? live : sold;
+    const start = (search.page - 1) * search.per_page;
+    return hitsResponse(source.slice(start, start + search.per_page), source.length);
+  };
+  return { fetchImpl, requests };
+};
+
+const liveDoc = (overrides = {}) => ({
+  slug: "2021-mercedes-amg-w213-e63-s-estate-1",
+  title: "2021 Mercedes-AMG (W213) E63 S Estate",
+  mainImageUrl: "https://images.collectingcars.com/090968/AS-03-08-08.jpg",
+  currencyCode: "gbp",
+  currentBid: 54000,
+  dtStageEndsUTC: "2026-10-05 12:00:00",
+  productMake: "Mercedes-AMG",
+  modelName: "E-Class",
   ...overrides,
 });
 
-test("run() maps a card to a RareLot, converting its native currency to USD", async () => {
+const soldDoc = (n, overrides = {}) => ({
+  slug: `2012-bentley-continental-gtc-v8-${n}`,
+  title: "2012 Bentley Continental GTC V8",
+  mainImageUrl: "https://images.collectingcars.com/091987/2-9-26KR9.jpg",
+  currencyCode: "aud",
+  priceSold: 80100,
+  isSoldPriceHidden: false,
+  productMake: "Bentley",
+  productYear: "2012",
+  modelName: "Continental GT",
+  dtSoldUTC: "2026-10-02 06:47:24",
+  ...overrides,
+});
+
+const scraperWith = (api, extra = {}) => {
   const dataDir = tmpDir();
-  const scraper = new CollectingCarsScraper({ fetchImpl: noSold, dataDir, fetchCards: async () => [card()], log: () => {} });
+  return new CollectingCarsScraper({ dataDir, fetchImpl: api.fetchImpl, log: () => {}, ...extra });
+};
+
+const cleanup = scraper => fs.rmSync(scraper.dataDir, { recursive: true, force: true });
+
+test("run() maps a live listing to a RareLot, converting its native currency to USD", async () => {
+  const scraper = scraperWith(fakeSearch({ live: [liveDoc()] }));
 
   const lots = await scraper.run();
   assert.equal(lots.length, 1);
@@ -31,129 +73,126 @@ test("run() maps a card to a RareLot, converting its native currency to USD", as
   assert.equal(lot.id, "collectingcars-2021-mercedes-amg-w213-e63-s-estate-1");
   assert.equal(lot.source, "Collecting Cars");
   assert.equal(lot.sourceUrl, "https://collectingcars.com/for-sale/2021-mercedes-amg-w213-e63-s-estate-1");
-  assert.equal(lot.title, "2021 Mercedes-AMG (W213) E63 S Estate"); // регистр из alt картинки, не КАПС карточки
+  assert.equal(lot.title, "2021 Mercedes-AMG (W213) E63 S Estate");
   assert.equal(lot.make, "Mercedes-AMG");
   assert.equal(lot.currentBid, Math.round(54000 * 1.32338)); // £ → USD
-  assert.equal(lot.photoUrl, card().imgSrc);
+  assert.equal(lot.photoUrl, `${liveDoc().mainImageUrl}?w=1280&q=75`);
+
+  cleanup(scraper);
 });
 
-test("run() converts every currency symbol seen on the site (£, €, A$, NZ$, US$)", async () => {
-  const dataDir = tmpDir();
-  const scraper = new CollectingCarsScraper({ fetchImpl: noSold,
-    dataDir,
-    fetchCards: async () => [
-      card({ href: "/for-sale/a", imgAlt: "Car A", text: "CURRENT BID\n\nA$41,250\n\n12:20:36\nWhyalla, SA\n62 Bids" }),
-      card({ href: "/for-sale/b", imgAlt: "Car B", text: "CURRENT BID\n\nNZ$52,500\n\n11:45:36\nAuckland\n36 Bids" }),
-      card({ href: "/for-sale/c", imgAlt: "Car C", text: "CURRENT BID\n\nUS$31,000\n\n17:15:36\nSharjah\n18 Bids" }),
-      card({ href: "/for-sale/d", imgAlt: "Car D", text: "CURRENT BID\n\n€20,000\n\n05:00:00\nParis\n5 Bids" }),
+test("run() converts every currency seen on the site (gbp, eur, aud, nzd, usd, chf)", async () => {
+  const scraper = scraperWith(fakeSearch({
+    live: [
+      liveDoc({ slug: "a", currencyCode: "aud", currentBid: 41250 }),
+      liveDoc({ slug: "b", currencyCode: "nzd", currentBid: 52500 }),
+      liveDoc({ slug: "c", currencyCode: "usd", currentBid: 31000 }),
+      liveDoc({ slug: "d", currencyCode: "eur", currentBid: 20000 }),
+      liveDoc({ slug: "e", currencyCode: "chf", currentBid: 10000 }),
     ],
-    log: () => {},
-  });
+  }));
 
   const lots = await scraper.run();
-  const byHref = Object.fromEntries(lots.map(l => [l.sourceUrl.split("/").pop(), l.currentBid]));
+  const bySlug = Object.fromEntries(lots.map(l => [l.sourceUrl.split("/").pop(), l.currentBid]));
 
-  assert.equal(byHref.a, Math.round(41250 * 0.69505));
-  assert.equal(byHref.b, Math.round(52500 * 0.56153));
-  assert.equal(byHref.c, 31000); // US$ 1:1
-  assert.equal(byHref.d, Math.round(20000 * 1.12979));
+  assert.equal(bySlug.a, Math.round(41250 * 0.69505));
+  assert.equal(bySlug.b, Math.round(52500 * 0.56153));
+  assert.equal(bySlug.c, 31000); // USD 1:1
+  assert.equal(bySlug.d, Math.round(20000 * 1.12979));
+  assert.equal(bySlug.e, Math.round(10000 * 1.1972));
+
+  cleanup(scraper);
 });
 
-test("run() computes closesAt from the live countdown, not a fixed date", async () => {
-  const dataDir = tmpDir();
+test("run() takes closesAt from the platform's exact end time (UTC), and flags a lot closing within 48h", async () => {
   const now = Date.parse("2026-10-01T12:00:00Z");
-  const scraper = new CollectingCarsScraper({ fetchImpl: noSold,
-    dataDir,
-    now: () => now,
-    fetchCards: async () => [card({ text: "CURRENT BID\n\n£1,000\n\n01:30:00\nLondon\n1 Bids" })],
-    log: () => {},
-  });
+  const scraper = scraperWith(
+    fakeSearch({ live: [liveDoc({ slug: "soon", dtStageEndsUTC: "2026-10-01 13:30:00" }), liveDoc({ slug: "later", dtStageEndsUTC: "2026-10-09 13:30:00" })] }),
+    { now: () => now },
+  );
+
+  const [soon, later] = await scraper.run();
+  assert.equal(soon.closesAt, "2026-10-01T13:30:00.000Z");
+  assert.equal(soon.status, "closing");
+  assert.equal(later.status, "open");
+
+  cleanup(scraper);
+});
+
+test("run() keeps a lot the platform still calls live as closing, not ended, once its scheduled end has passed", async () => {
+  const now = Date.parse("2026-10-01T12:00:00Z");
+  const scraper = scraperWith(fakeSearch({ live: [liveDoc({ dtStageEndsUTC: "2026-10-01 11:59:00" })] }), { now: () => now });
 
   const [lot] = await scraper.run();
-  assert.equal(lot.closesAt, new Date(now + (1 * 3600 + 30 * 60) * 1000).toISOString());
-  assert.equal(lot.status, "closing"); // 1ч30м — внутри окна "скоро закрывается"
+  assert.equal(lot.status, "closing");
+
+  cleanup(scraper);
 });
 
-test("run() skips cards without a recognisable price/countdown block", async () => {
-  const dataDir = tmpDir();
-  const scraper = new CollectingCarsScraper({ fetchImpl: noSold,
-    dataDir,
-    fetchCards: async () => [
-      card(),
-      { href: "/for-sale/no-bid-yet", imgAlt: "Coming Soon Car", imgSrc: "https://x/y.jpg", text: "COMING SOON\nSome Car\nStarts in 3 days" },
+test("run() asks only for live car auctions, and skips lots with no usable price", async () => {
+  const api = fakeSearch({
+    live: [
+      liveDoc(),
+      liveDoc({ slug: "no-bid", currentBid: null }),
+      liveDoc({ slug: "odd-currency", currencyCode: "sek" }),
     ],
-    log: () => {},
   });
+  const scraper = scraperWith(api);
 
   const lots = await scraper.run();
-  assert.equal(lots.length, 1);
-  assert.equal(lots[0].sourceUrl, "https://collectingcars.com/for-sale/2021-mercedes-amg-w213-e63-s-estate-1");
+  assert.deepEqual(lots.map(l => l.id), ["collectingcars-2021-mercedes-amg-w213-e63-s-estate-1"]);
+
+  const liveRequest = api.requests.find(r => r.search.filter_by.includes("listingStage:live"));
+  assert.match(liveRequest.url, /multi_search/);
+  assert.match(liveRequest.search.filter_by, /lotType:car/);
+  assert.match(liveRequest.search.filter_by, /saleFormat:auction/);
+
+  cleanup(scraper);
+});
+
+test("fetchLiveDocs pages through everything when there are more live lots than one page", async () => {
+  const live = Array.from({ length: 300 }, (_, i) => liveDoc({ slug: `car-${i}` }));
+  const scraper = scraperWith(fakeSearch({ live }));
+
+  const docs = await scraper.fetchLiveDocs();
+  assert.equal(docs.length, 300);
+
+  cleanup(scraper);
 });
 
 test("run() reports only genuinely new lots to alerts.checkAfterRun", async () => {
-  const dataDir = tmpDir();
   const calls = [];
   const alerts = { checkAfterRun: async (args) => { calls.push(args); } };
-
-  const scraper = new CollectingCarsScraper({ fetchImpl: noSold,
-    dataDir,
-    alerts,
-    fetchCards: async () => [card()],
-    log: () => {},
-  });
+  const api = fakeSearch({ live: [liveDoc()] });
+  const scraper = scraperWith(api, { alerts });
 
   await scraper.run();
   assert.equal(calls.length, 1);
   assert.deepEqual(calls[0].newLots.map(l => l.id), ["collectingcars-2021-mercedes-amg-w213-e63-s-estate-1"]);
 
-  scraper.fetchCards = async () => [card(), card({ href: "/for-sale/second-car", imgAlt: "Second Car" })];
+  scraper.fetchImpl = fakeSearch({ live: [liveDoc(), liveDoc({ slug: "second-car" })] }).fetchImpl;
   await scraper.run();
 
   assert.equal(calls.length, 2);
   assert.deepEqual(calls[1].newLots.map(l => l.id), ["collectingcars-second-car"]);
 
-  fs.rmSync(dataDir, { recursive: true, force: true });
+  cleanup(scraper);
 });
 
-test("run() writes a failed status and rethrows when fetching fails", async () => {
-  const dataDir = tmpDir();
-  const scraper = new CollectingCarsScraper({ fetchImpl: noSold,
-    dataDir,
-    fetchCards: async () => { throw new Error("прокси недоступен"); },
-    log: () => {},
-  });
+test("run() writes a failed status and rethrows when the search fails", async () => {
+  const scraper = scraperWith({ fetchImpl: async () => ({ ok: false, status: 502 }) });
 
   await assert.rejects(() => scraper.run());
   const status = scraper.readStatus();
   assert.equal(status.ok, false);
-  assert.match(status.error, /прокси/);
+  assert.match(status.error, /502/);
 
-  fs.rmSync(dataDir, { recursive: true, force: true });
-});
-
-const soldDoc = (n, overrides = {}) => ({
-  id: String(n),
-  slug: `2012-bentley-continental-gtc-v8-${n}`,
-  title: "2012 Bentley Continental GTC V8",
-  mainImageUrl: "https://images.collectingcars.com/091987/2-9-26KR9.jpg",
-  currencyCode: "aud",
-  priceSold: 80100,
-  isSoldPriceHidden: false,
-  saleFormat: "auction",
-  lotType: "car",
-  productMake: "Bentley",
-  productYear: "2012",
-  modelName: "Continental GT",
-  dtSoldUTC: "2026-10-02 06:47:24",
-  tsSoldUTC: 1790923644,
-  ...overrides,
+  cleanup(scraper);
 });
 
 test("updateSoldArchive archives a sold car, converting the sale price to USD and keeping the original", async () => {
-  const dataDir = tmpDir();
-  const requests = [];
-  const scraper = new CollectingCarsScraper({ dataDir, log: () => {} });
-  scraper.fetchImpl = async (url, init) => { requests.push({ url, body: JSON.parse(init.body) }); return soldResponse([soldDoc(1)]); };
+  const api = fakeSearch({ sold: [soldDoc(1)] });
+  const scraper = scraperWith(api);
 
   assert.equal(await scraper.updateSoldArchive(), 1);
 
@@ -166,42 +205,42 @@ test("updateSoldArchive archives a sold car, converting the sale price to USD an
   assert.equal(lot.salePriceLocal, 80100);
   assert.equal(lot.currency, "AUD");
   assert.equal(lot.sold, true);
-  assert.equal(lot.soldAt, "2026-10-02T06:47:24Z");
-  assert.equal(lot.photoUrl, "https://images.collectingcars.com/091987/2-9-26KR9.jpg");
-  assert.match(requests[0].url, /multi_search/);
-  assert.match(requests[0].body.searches[0].filter_by, /listingStage:sold/);
-  assert.match(requests[0].body.searches[0].filter_by, /lotType:car/);
-  assert.match(requests[0].body.searches[0].filter_by, /saleFormat:auction/);
+  assert.equal(lot.soldAt, "2026-10-02T06:47:24.000Z");
+  assert.equal(lot.photoUrl, "https://images.collectingcars.com/091987/2-9-26KR9.jpg?w=1280&q=75");
+  assert.match(api.requests[0].search.filter_by, /listingStage:sold/);
+  assert.match(api.requests[0].search.filter_by, /lotType:car/);
+  assert.match(api.requests[0].search.filter_by, /saleFormat:auction/);
 
-  fs.rmSync(dataDir, { recursive: true, force: true });
+  cleanup(scraper);
 });
 
 test("updateSoldArchive skips hidden prices and currencies it has no rate for", async () => {
-  const dataDir = tmpDir();
-  const scraper = new CollectingCarsScraper({ dataDir, log: () => {} });
-  scraper.fetchImpl = async () => soldResponse([
-    soldDoc(1),
-    soldDoc(2, { isSoldPriceHidden: true }),
-    soldDoc(3, { currencyCode: "sek" }),
-    soldDoc(4, { priceSold: null }),
-  ]);
+  const scraper = scraperWith(fakeSearch({
+    sold: [
+      soldDoc(1),
+      soldDoc(2, { isSoldPriceHidden: true }),
+      soldDoc(3, { currencyCode: "sek" }),
+      soldDoc(4, { priceSold: null }),
+    ],
+  }));
 
   await scraper.updateSoldArchive();
   assert.deepEqual(scraper.readSold().map(l => l.id), ["collectingcars-2012-bentley-continental-gtc-v8-1"]);
 
-  fs.rmSync(dataDir, { recursive: true, force: true });
+  cleanup(scraper);
 });
 
 test("updateSoldArchive pages until a page has nothing new, and never duplicates", async () => {
-  const dataDir = tmpDir();
   const pages = [];
-  const fullPage = from => Array.from({ length: 250 }, (_, i) => soldDoc(from + i));
-  const scraper = new CollectingCarsScraper({ dataDir, log: () => {} });
-  scraper.fetchImpl = async (url, init) => {
-    const page = JSON.parse(init.body).searches[0].page;
-    pages.push(page);
-    return soldResponse(page === 1 ? fullPage(1) : page === 2 ? fullPage(251) : fullPage(1));
-  };
+  const first = Array.from({ length: 500 }, (_, i) => soldDoc(i));
+  const scraper = scraperWith({
+    // страницы 1–2 — новые, страница 3 — повтор уже знакомых → стоп
+    fetchImpl: async (url, init) => {
+      const { page } = JSON.parse(init.body).searches[0];
+      pages.push(page);
+      return hitsResponse(page === 1 ? first.slice(0, 250) : page === 2 ? first.slice(250) : first.slice(0, 250));
+    },
+  });
 
   assert.equal(await scraper.updateSoldArchive(), 500);
   assert.deepEqual(pages, [1, 2, 3]);
@@ -211,18 +250,21 @@ test("updateSoldArchive pages until a page has nothing new, and never duplicates
   assert.deepEqual(pages, [1]);
   assert.equal(scraper.readSold().length, 500);
 
-  fs.rmSync(dataDir, { recursive: true, force: true });
+  cleanup(scraper);
 });
 
 test("run() still succeeds when the sold-archive request fails", async () => {
-  const dataDir = tmpDir();
-  const scraper = new CollectingCarsScraper({ dataDir, fetchCards: async () => [card()], log: () => {} });
-  scraper.fetchImpl = async () => ({ ok: false, status: 500 });
+  const live = fakeSearch({ live: [liveDoc()] });
+  const scraper = scraperWith({
+    fetchImpl: async (url, init) => JSON.parse(init.body).searches[0].filter_by.includes("listingStage:sold")
+      ? { ok: false, status: 500 }
+      : live.fetchImpl(url, init),
+  });
 
   const lots = await scraper.run();
   assert.equal(lots.length, 1);
   assert.equal(scraper.readStatus().ok, true);
   assert.deepEqual(scraper.readSold(), []);
 
-  fs.rmSync(dataDir, { recursive: true, force: true });
+  cleanup(scraper);
 });
