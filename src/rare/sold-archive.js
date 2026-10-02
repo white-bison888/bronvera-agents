@@ -53,4 +53,12 @@ const yearFromTitle = (title) => {
   return match ? Number(match[0]) : null;
 };
 
-module.exports = { loadSoldArchive, readSoldArchiveCached, saveSoldArchive, yearFromTitle };
+/*
+ * Пока идёт долгий разовый добор данных (страницы лотов — часы), он держит архив
+ * в памяти и записывает его целиком. Если в это время сервис сделает свой
+ * суточный заход и тоже запишет архив, чья-то работа затрётся. Файл sold.lock
+ * рядом с архивом говорит сервису: не трогай архив, пока он лежит.
+ */
+const soldArchiveLocked = dataDir => fs.existsSync(path.join(dataDir, "sold.lock"));
+
+module.exports = { soldArchiveLocked, loadSoldArchive, readSoldArchiveCached, saveSoldArchive, yearFromTitle };

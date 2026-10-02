@@ -1,8 +1,12 @@
 const fs = require("fs");
 const path = require("path");
 const { guessMake, guessModel } = require("./title-parser");
-const { loadSoldArchive, readSoldArchiveCached, saveSoldArchive, yearFromTitle } = require("./sold-archive");
+const { loadSoldArchive, readSoldArchiveCached, saveSoldArchive, soldArchiveLocked, yearFromTitle } = require("./sold-archive");
 const { FxRates, reconvertArchive } = require("./fx");
+const { bodyStyleOf, parseVehicleAttributes } = require("./sold-attrs");
+const { enrichFromPages } = require("./sold-pages");
+const { colorGroupOf, decodeEntities, parseRmText, transmissionKind } = require("./sold-fields");
+const { describeTransmission } = require("./transmission");
 
 /*
  * BRONVERA Rare, Фаза 3 (01.10.2026): третья площадка — RM Sotheby's.
@@ -125,6 +129,7 @@ const toSoldLot = (item, endDate, code) => {
     mileage: null,
     transmission: null,
     conditionFacts: [],
+    ...parseVehicleAttributes(title),
     photoUrl: item.crop || null,
   };
 };
@@ -153,6 +158,45 @@ const toRareLot = (item, closesAt) => {
   };
 };
 
+/*
+ * Страница лота RM — основной текст (пункты «highlights» и очерк). Из него
+ * берём цвет, пробег, коробку, двигатель, привод и кузов. Структурированных
+ * полей у RM нет, поэтому полнота зависит от того, что написал автор очерка.
+ */
+const textOfPage = (html) => {
+  // Только сам лот: пункты «highlights» и очерк. Всё остальное на странице (меню, «You may also like»,
+  // соседние лоты) — чужие машины, из них в разбор лезли чужие кузова и цвета.
+  const bullets = (html.match(/<ul class="list-bullets[^"]*"[^>]*>([\s\S]*?)<\/ul>/) || [])[1] || "";
+  const essayStart = html.search(/class="container container--vw lotdescription"/);
+  let essay = "";
+  if (essayStart >= 0) {
+    const rest = html.slice(essayStart);
+    const end = rest.search(/You may also like/i);
+    essay = end > 0 ? rest.slice(0, end) : rest.slice(0, 40000);
+  }
+  const plain = fragment => decodeEntities(fragment.replace(/<script[\s\S]*?<\/script>|<style[\s\S]*?<\/style>/gi, " ").replace(/<[^>]+>/g, "\n")).split("\n").map(line => line.trim()).filter(Boolean).join(" ");
+  return `${plain(bullets)} ${plain(essay)}`.trim();
+};
+
+const parseRmLotPage = (html, lot = {}) => {
+  const text = textOfPage(html);
+  if (!text)
+    return {};
+  const found = parseRmText(text);
+  const attrs = parseVehicleAttributes(lot.title, text);
+  const bodyStyle = bodyStyleOf(lot.title); // кузов — только по названию лота: в очерке упоминаются и другие модели
+  delete attrs.bodyStyle;
+  return {
+    mileage: found.mileage,
+    exteriorColor: found.exteriorColor,
+    colorGroup: colorGroupOf(found.exteriorColor),
+    transmission: describeTransmission(found.transmissionRaw),
+    transmissionKind: transmissionKind(found.transmissionRaw),
+    ...(bodyStyle ? { bodyStyle } : {}),
+    ...attrs,
+  };
+};
+
 class RmSothebysScraper {
   constructor({
     fetchImpl = fetch,
@@ -161,8 +205,9 @@ class RmSothebysScraper {
     log = (...args) => console.log(...args),
     alerts = null,
     fx = new FxRates({ file: path.join(dataDir, "..", "fx-rates.json") }),
+    sleep = ms => new Promise(resolve => setTimeout(resolve, ms)),
   } = {}) {
-    Object.assign(this, { fetchImpl, dataDir, now, log, alerts, fx });
+    Object.assign(this, { fetchImpl, dataDir, now, log, alerts, fx, sleep });
   }
 
   lotsFile() {
@@ -456,6 +501,34 @@ class RmSothebysScraper {
     return added;
   }
 
+  /* Дописывает проданным лотам из архива пробег, цвет, коробку и двигатель со страницы лота. */
+  async enrichSoldFromPages({ limit = Infinity, delayMs = 350 } = {}) {
+    const archive = loadSoldArchive(this.soldFile());
+    const lots = Object.values(archive)
+      .filter(lot => lot.sourceUrl)
+      .sort((a, b) => b.salePrice - a.salePrice);
+
+    return enrichFromPages({
+      lots,
+      limit,
+      delayMs,
+      sleep: this.sleep,
+      now: this.now,
+      log: this.log,
+      label: "RM Sotheby's",
+      save: () => saveSoldArchive(this.soldFile(), archive),
+      fetchHtml: async (lot) => {
+        const response = await this.fetchImpl(lot.sourceUrl, { headers: { "User-Agent": "Mozilla/5.0 (compatible; BRONVERA-Rare/1.0)" } });
+        if (response.status === 404)
+          return null;
+        if (!response.ok)
+          throw new Error(`страница ответила ${response.status}`);
+        return response.text();
+      },
+      parse: (html, lot) => parseRmLotPage(html, lot),
+    });
+  }
+
   async run() {
     const now = this.now();
     const previousIds = new Set(this.readLots().lots.map(lot => lot.id));
@@ -478,7 +551,8 @@ class RmSothebysScraper {
 
       this.writeStatus({ source: "RM Sotheby's", lastRunAt: new Date(now).toISOString(), ok: true, count: enriched.length, error: null });
 
-      await this.updateSoldArchive().catch(error => this.log("BRONVERA Rare: не добрал архив продаж RM Sotheby's:", error.message));
+      if (!soldArchiveLocked(this.dataDir))
+        await this.updateSoldArchive().catch(error => this.log("BRONVERA Rare: не добрал архив продаж RM Sotheby's:", error.message));
 
       if (this.alerts) {
         const newLots = enriched.filter(lot => !previousIds.has(lot.id));
@@ -509,5 +583,7 @@ class RmSothebysScraper {
     this.timer = null;
   }
 }
+
+RmSothebysScraper.parseRmLotPage = parseRmLotPage;
 
 module.exports = RmSothebysScraper;

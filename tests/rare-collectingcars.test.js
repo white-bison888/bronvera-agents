@@ -310,3 +310,34 @@ test("updateSoldArchive re-prices archived lots that still carry the old fixed-r
 
   cleanup(scraper);
 });
+
+test("updateSoldArchive enriches an already-archived lot with trim, generation, engine and steering without touching its price", async () => {
+  const scraper = scraperWith(fakeSearch({
+    sold: [soldDoc(1, {
+      variantName: "Turbo S",
+      generationName: "997.2",
+      powertrainName: "3.8L Twin-Turbocharged H6",
+      driveSide: "right",
+      features: { mileage: "64,500 Miles", transmission: "Automatic", driveSide: "RHD" },
+    })],
+  }));
+  fs.mkdirSync(scraper.dataDir, { recursive: true });
+  fs.writeFileSync(scraper.soldFile(), JSON.stringify({
+    "collectingcars-2012-bentley-continental-gtc-v8-1": { id: "collectingcars-2012-bentley-continental-gtc-v8-1", title: "old", salePrice: 111, salePriceLocal: 80100, currency: "AUD", fxDate: "2026-10-02", soldAt: "2026-10-02T06:47:24.000Z" },
+  }));
+
+  await scraper.updateSoldArchive({ stopWhenKnown: false });
+
+  const [lot] = scraper.readSold();
+  assert.equal(lot.salePrice, 111); // цена и курс не меняются
+  assert.equal(lot.trimName, "Turbo S");
+  assert.equal(lot.generation, "997.2");
+  assert.equal(lot.cylinders, 6);
+  assert.equal(lot.engineLayout, "Оппозитный");
+  assert.equal(lot.displacement, 3.8);
+  assert.equal(lot.steering, "Правый");
+  assert.equal(lot.mileage, 64500);
+  assert.equal(lot.transmissionKind, "automatic");
+
+  cleanup(scraper);
+});

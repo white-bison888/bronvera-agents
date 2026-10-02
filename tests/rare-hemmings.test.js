@@ -376,3 +376,28 @@ test("a deep backfill (stopWhenKnown: false) walks every page up to maxPages", a
 
   fs.rmSync(dataDir, { recursive: true, force: true });
 });
+
+test("run() leaves the sold archive alone while a long enrichment job holds sold.lock", async () => {
+  const dataDir = tmpDir();
+  fs.mkdirSync(dataDir, { recursive: true });
+  fs.writeFileSync(path.join(dataDir, "sold.lock"), "");
+  let soldRequests = 0;
+  const scraper = new HemmingsScraper({
+    dataDir,
+    fetchImpl: async (url) => {
+      if (decodeURIComponent(url).includes("listing_status[]=sold"))
+        soldRequests += 1;
+      return { ok: true, json: async () => searchResponse([listing()]) };
+    },
+    log: () => {},
+  });
+
+  await scraper.run();
+  assert.equal(soldRequests, 0);
+
+  fs.rmSync(path.join(dataDir, "sold.lock"));
+  await scraper.run();
+  assert.ok(soldRequests > 0);
+
+  fs.rmSync(dataDir, { recursive: true, force: true });
+});

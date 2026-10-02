@@ -3,8 +3,9 @@ const path = require("path");
 const { applyLiteBrowsing } = require("../providers/lite-browsing");
 const { meterBrowserContext } = require("../costs/ledger");
 const { guessMake, guessModel } = require("./title-parser");
-const { loadSoldArchive, readSoldArchiveCached, saveSoldArchive, yearFromTitle } = require("./sold-archive");
+const { loadSoldArchive, readSoldArchiveCached, saveSoldArchive, soldArchiveLocked, yearFromTitle } = require("./sold-archive");
 const { transmissionKind } = require("./sold-fields");
+const { parseVehicleAttributes } = require("./sold-attrs");
 
 /*
  * BRONVERA Rare, Фаза 3 (01.10.2026): четвёртая площадка — Cars & Bids.
@@ -136,6 +137,8 @@ const toSoldLot = (item) => {
     mileage: parseMileage(item.mileage),
     transmission: TRANSMISSION_LABELS[item.transmission] || null,
     transmissionKind: transmissionKind(TRANSMISSION_LABELS[item.transmission]),
+    // sub_title у Cars & Bids — короткие факты («675 Miles, 6-Speed Manual, Supercharged V8, Recaro Seats»).
+    ...parseVehicleAttributes(title, item.sub_title),
     conditionFacts: [],
     photoUrl: photoUrlOf(item.main_photo),
   };
@@ -358,7 +361,8 @@ class CarsAndBidsScraper {
       this.writeStatus({ source: "Cars & Bids", lastRunAt: new Date(now).toISOString(), ok: true, count: lots.length, error: null });
 
       // Архив проданных для Stats — не должен ронять весь прогон активных лотов, если /past-auctions подвела.
-      await this.updateSoldArchive().catch(error => this.log("BRONVERA Rare: не добрал архив продаж Cars & Bids:", error.message));
+      if (!soldArchiveLocked(this.dataDir))
+        await this.updateSoldArchive().catch(error => this.log("BRONVERA Rare: не добрал архив продаж Cars & Bids:", error.message));
 
       if (this.alerts) {
         const newLots = lots.filter(lot => !previousIds.has(lot.id));

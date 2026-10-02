@@ -1073,6 +1073,14 @@ app.get("/api/rare/sold/points", (req, res) => {
   res.json({ success: true, total: soldIndex.total(), count: rows.length, fields, dict, rows });
 });
 
+/* Сравнимые продажи для страницы лота: те же линейка, комплектация, кузов, коробка, двигатель, годы — см. SoldIndex.comparables. */
+app.get("/api/rare/sold/comps", (req, res) => {
+  const comps = soldIndex.comparables(String(req.query.id || ""));
+  if (!comps)
+    return res.status(404).json({ success: false, message: "лот не найден" });
+  res.json({ success: true, ...comps });
+});
+
 const SOLD_LOTS_MAX_IDS = 500;
 
 app.post("/api/rare/sold/lots", (req, res) => {

@@ -2,9 +2,11 @@ const fs = require("fs");
 const path = require("path");
 const { describeTransmission } = require("./transmission");
 const { guessMake, guessModel } = require("./title-parser");
-const { loadSoldArchive, readSoldArchiveCached, saveSoldArchive, yearFromTitle } = require("./sold-archive");
+const { loadSoldArchive, readSoldArchiveCached, saveSoldArchive, soldArchiveLocked, yearFromTitle } = require("./sold-archive");
 const { FxRates } = require("./fx");
 const { colorGroupOf, decodeEntities: decodeBatEntities, parseBatExcerpt, transmissionKind } = require("./sold-fields");
+const { fillAttributes, parseVehicleAttributes } = require("./sold-attrs");
+const { enrichFromPages } = require("./sold-pages");
 
 /*
  * BRONVERA Rare, Фаза 1 (план 30.09.2026): первая реальная площадка —
@@ -71,11 +73,15 @@ const decodeHtmlEntities = (text) =>
  * навсегда в lot-details.json, а не перезапрашиваем каждый день вместе
  * со списком.
  */
-const parseListingDetails = (html) => {
+const parseListingItems = (html) => {
   const blockMatch = html.match(/<strong>Listing Details<\/strong><ul>(.*?)<\/ul>/s);
-  const items = blockMatch
+  return blockMatch
     ? [...blockMatch[1].matchAll(/<li>(.*?)<\/li>/gs)].map(m => decodeHtmlEntities(m[1].replace(/<[^>]+>/g, "").trim()))
     : [];
+};
+
+const parseListingDetails = (html) => {
+  const items = parseListingItems(html);
 
   const vinItem = items.find(item => /^(Chassis|VIN):/i.test(item));
   const vin = vinItem ? vinItem.replace(/^(Chassis|VIN):\s*/i, "").trim() : null;
@@ -94,6 +100,51 @@ const parseListingDetails = (html) => {
   const ownerType = ownerTypeRaw === "Private Party" ? "Частное лицо" : ownerTypeRaw === "Dealer" ? "Дилер" : ownerTypeRaw;
 
   return { vin, mileage, transmission: describeTransmission(transmissionRaw), ownerType, ...parseAuctionResult(html) };
+};
+
+/*
+ * Страница завершённого лота: в «Listing Details» перечислено, что в машине
+ * («4,900 Miles», «Twin-Turbocharged 3.7-Liter Flat-Six», «Eight-Speed PDK…»,
+ * «All-Wheel-Drive System», «Chalk Paint», «Cognac … Leather», пакеты и
+ * опции). Из неё берём пробег, цвет кузова и салона, двигатель, привод и
+ * комплектацию — это точнее и полнее описания из списка.
+ */
+const parseSoldPage = (html, lot = {}) => {
+  const items = parseListingItems(html);
+  if (!items.length)
+    return {};
+
+  const mileageItem = items.find(item => /\b(miles?|kilometers?|km)\b/i.test(item) && /\d/.test(item));
+  const paintItem = items.find(item => /\bpaint\b|\bfinish\b|\bpaintwork\b/i.test(item) && !/\b(wheels?|trim|accents|stripes?)\b/i.test(item));
+  const exteriorColor = paintItem ? paintItem.replace(/\s*(?:metallic\s+)?(?:paint(?:work)?|finish)\s*$/i, "").replace(/\b(Two-Tone|Single-Stage|Factory|Repainted|Original)\s*/gi, "").trim() || null : null;
+  const interiorItem = items.find(item => /\b(leather|cloth|vinyl|upholstery|alcantara|interior|velour|suede|corduroy)\b/i.test(item));
+  const transmissionItem = items.find(item => /\b(manual|automatic|dual-clutch|pdk|dsg|cvt)\b/i.test(item));
+  const engineItem = items.find(item => /\b(liter|litre|cc|ci|flat-|inline-|straight-|v-?(6|8|10|12|16)|rotary|turbo|supercharged)\b/i.test(item) && !/\b(wheels?|exhaust|headlights|brakes)\b/i.test(item));
+
+  const known = new Set([mileageItem, paintItem, interiorItem, transmissionItem, engineItem].filter(Boolean));
+  const facts = items
+    .filter(item => !known.has(item) && !/^(Chassis|VIN)\b/i.test(item) && item.length <= 90)
+    .slice(0, 12);
+
+  const miles = mileageItem ? mileageItem.match(/([\d,]+(?:\.\d+)?)\s*(k)?\+?\s*(miles?|km|kilometers?)/i) : null;
+  let mileage = null;
+  if (miles) {
+    const base = Number(miles[1].replace(/,/g, "")) * (miles[2] ? 1000 : 1);
+    mileage = Math.round(/^k/i.test(miles[3]) ? base / 1.609344 : base);
+  }
+
+  const attrs = parseVehicleAttributes(lot.title, items.join(". "));
+
+  return {
+    mileage,
+    transmission: describeTransmission(transmissionItem),
+    transmissionKind: transmissionKind(transmissionItem),
+    exteriorColor,
+    colorGroup: colorGroupOf(exteriorColor),
+    interiorColor: interiorItem ? interiorItem.slice(0, 80) : null,
+    conditionFacts: facts,
+    ...attrs,
+  };
 };
 
 /*
@@ -176,6 +227,8 @@ const ERAS = ["2020", "2010", "2000", "1990", "1980", "1970", "1960", "1950", "1
 const COMPLETED_PER_PAGE = 60;
 const COMPLETED_MAX_PAGE = 165;
 const REQUEST_GAP_MS = 1500;
+// Поля, которые можно дописать лоту, уже лежащему в архиве, не затирая известное.
+const ENRICH_KEYS = ["mileage", "transmission", "transmissionKind", "exteriorColor", "colorGroup", "bodyStyle", "cylinders", "engineLayout", "displacement", "aspiration", "drivetrain", "steering"];
 const SLOW_DOWN_WAIT_MS = 30_000;
 
 // Мотоциклы, скутеры и прочее не-авто попадают в тот же список без категорий — отсекаем по названию.
@@ -220,6 +273,7 @@ const toCompletedSoldLot = (item) => {
     transmissionKind: transmissionKind(details.transmissionRaw),
     exteriorColor: details.exteriorColor,
     colorGroup: colorGroupOf(details.exteriorColor),
+    ...parseVehicleAttributes(title, decodeBatEntities(item.excerpt)),
     photoUrl: item.thumbnail_url || null,
   };
 };
@@ -477,7 +531,7 @@ class BatScraper {
           if (archive[lot.id]) {
             // Лот уже был в архиве без цвета/пробега (из индекса /auctions/) — дополняем, не затираем.
             const known = archive[lot.id];
-            for (const key of ["mileage", "transmission", "transmissionKind", "exteriorColor", "colorGroup"]) {
+            for (const key of ENRICH_KEYS) {
               if ((known[key] === null || known[key] === undefined) && lot[key] !== null && lot[key] !== undefined) {
                 known[key] = lot[key];
                 eraEnriched += 1;
@@ -513,6 +567,38 @@ class BatScraper {
     return added;
   }
 
+  /*
+   * Дописывает проданным лотам из архива пробег, цвет, комплектацию со страницы
+   * лота (см. parseSoldPage). minPrice — чтобы начать с дорогих машин, ради
+   * которых сервис и существует; limit — сколько страниц за заход.
+   */
+  async enrichSoldFromPages({ minPrice = 0, limit = Infinity, delayMs = 600, soldOnly = true } = {}) {
+    const archive = loadSoldArchive(this.soldFile());
+    const lots = Object.values(archive)
+      .filter(lot => lot.sourceUrl && lot.salePrice >= minPrice && (!soldOnly || lot.sold !== false))
+      .sort((a, b) => b.salePrice - a.salePrice);
+
+    return enrichFromPages({
+      lots,
+      limit,
+      delayMs,
+      sleep: this.sleep,
+      now: this.now,
+      log: this.log,
+      label: "Bring a Trailer",
+      save: () => saveSoldArchive(this.soldFile(), archive),
+      fetchHtml: async (lot) => {
+        const response = await this.fetchImpl(lot.sourceUrl, { headers: { "User-Agent": "Mozilla/5.0 (compatible; BRONVERA-Rare/1.0)" } });
+        if (response.status === 404)
+          return null;
+        if (!response.ok)
+          throw new Error(`страница ответила ${response.status}`);
+        return response.text();
+      },
+      parse: (html, lot) => parseSoldPage(html, lot),
+    });
+  }
+
   async run() {
     const now = this.now();
     // До перезаписи — чтобы потом отличить реально новые лоты от уже виденных (для алертов).
@@ -545,8 +631,13 @@ class BatScraper {
 
       this.writeStatus({ source: "Bring a Trailer", lastRunAt: new Date(now).toISOString(), ok: true, count: enriched.length, error: null });
 
-      this.updateSoldArchive(enriched);
-      await this.updateSoldFromCompleted().catch(error => this.log("BRONVERA Rare: не добрал итоги BaT из списка завершённых:", error.message));
+      if (soldArchiveLocked(this.dataDir)) {
+        this.log("BRONVERA Rare: архив продаж BaT занят разовым добором данных — суточное обновление пропускаю");
+      }
+      else {
+        this.updateSoldArchive(enriched);
+        await this.updateSoldFromCompleted().catch(error => this.log("BRONVERA Rare: не добрал итоги BaT из списка завершённых:", error.message));
+      }
 
       if (this.alerts) {
         const newLots = enriched.filter(lot => !previousIds.has(lot.id));
@@ -588,5 +679,8 @@ class BatScraper {
     this.timer = null;
   }
 }
+
+BatScraper.parseSoldPage = parseSoldPage;
+BatScraper.toCompletedSoldLot = toCompletedSoldLot;
 
 module.exports = BatScraper;

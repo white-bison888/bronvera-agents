@@ -47,20 +47,34 @@ const transmissionKind = (raw) => {
  * Всё, что не распознали, — «Другой» (не выдумываем).
  */
 const COLOR_RULES = [
-  ["Серебристый", /silver|argent|argento/i],
-  ["Серый", /gr[ae]y|graphite|anthracite|gunmetal|charcoal|slate|titanium|steel|gris|grigio|ash\b/i],
-  ["Чёрный", /black|ebony|onyx|\bjet\b|noir|nero|obsidian|raven|schwarz/i],
-  ["Белый", /white|ivory|pearl|alpine|blanc|bianco|polar|snow|weiss/i],
-  ["Красный", /\bred\b|rosso|burgundy|maroon|crimson|cherry|ruby|carmine|claret|scarlet|garnet|bordeaux|rouge|\brosa?\b|corsa/i],
-  ["Синий", /blue|azure|aqua|navy|cobalt|indigo|sapphire|bleu|blu\b|cyan|denim|lapis/i],
-  ["Зелёный", /green|olive|sage|moss|emerald|forest|verde|teal|british racing|\bbrg\b|vert/i],
-  ["Жёлтый", /yellow|giallo|canary|saffron|sunflower|mustard|lemon|\bjaune/i],
-  ["Золотой", /gold|champagne gold/i],
-  ["Оранжевый", /orange|arancio|tangerine|copper|burnt|papaya|\brust/i],
-  ["Коричневый", /brown|bronze|chocolate|mocha|chestnut|cocoa|brandy|coffee|walnut|espresso|marrone|havana|cognac|umber/i],
-  ["Бежевый", /beige|\btan\b|champagne|sand|taupe|khaki|cream|buff|biscuit|parchment|sable|oatmeal/i],
-  ["Фиолетовый", /purple|violet|plum|lavender|amethyst|aubergine|magenta|lilac|\bviola/i],
+  ["Серебристый", /\b(?:silver|argent|argento)/i],
+  ["Серый", /\b(?:gr[ae]y|graphite|anthracite|gunmetal|charcoal|slate|titanium|steel|gris|grigio|ash\b)/i],
+  ["Чёрный", /\b(?:black|ebony|onyx|jet\b|noir|nero|obsidian|raven|schwarz)/i],
+  ["Белый", /\b(?:white|ivory|pearl|alpine|blanc|bianco|polar|snow|weiss|chalk)/i],
+  ["Красный", /\b(?:red\b|rosso|burgundy|maroon|crimson|cherry|ruby|carmine|claret|scarlet|garnet|bordeaux|rouge|rosa\b|corsa)/i],
+  ["Синий", /\b(?:blue|azure|azzurro|celeste|aqua|navy|cobalt|indigo|sapphire|bleu|blu\b|cyan|denim|lapis)/i],
+  ["Зелёный", /\b(?:green|olive|sage|moss|emerald|forest|verde|teal|british racing|brg\b|vert\b)/i],
+  ["Жёлтый", /\b(?:yellow|giallo|canary|saffron|sunflower|mustard|lemon|jaune)/i],
+  ["Золотой", /\b(?:gold)/i],
+  ["Оранжевый", /\b(?:orange|arancio|tangerine|copper|burnt|papaya|rust)/i],
+  ["Коричневый", /\b(?:brown|bronze|chocolate|mocha|chestnut|cocoa|brandy|coffee|walnut|espresso|marrone|havana|cognac|umber)/i],
+  ["Бежевый", /\b(?:beige|tan\b|champagne|sand\b|taupe|khaki|cream|buff\b|biscuit|parchment|sable|oatmeal)/i],
+  ["Фиолетовый", /\b(?:purple|violet|plum|lavender|amethyst|aubergine|magenta|lilac|viola)/i],
 ];
+
+/* «harmonious Dove Blue», «red exterior and», «livery of blue» → «Dove Blue», «red», «blue»: убираем эпитеты и служебные слова. */
+const FLUFF_START = /^(?:(?:livery|shade|hue|color|colour|paint|finish)\s+of\s+|(?:harmonious|attractive|elegant|beautiful|handsome|striking|stunning|gorgeous|lovely|rich|classic|period|original|factory|delightful|subtle|sophisticated|handsomely|tasteful|appealing|eye-catching|vibrant)(?:\s+|$))+/i;
+const FLUFF_END = /\s+(?:exterior|bodywork|body|paint|paintwork|livery|finish|hue|shade|colou?r|coachwork|and|with|over)$/i;
+
+const cleanColor = (raw) => {
+  let text = String(raw || "").trim();
+  let previous = null;
+  while (text !== previous) {
+    previous = text;
+    text = text.replace(FLUFF_START, "").replace(FLUFF_END, "").trim();
+  }
+  return text || null;
+};
 
 const colorGroupOf = (raw) => {
   const text = String(raw || "").trim();
@@ -93,8 +107,8 @@ const parseBatExcerpt = (title, excerpt) => {
   else if (dashed)
     exteriorColor = dashed[1];
   if (exteriorColor) {
-    exteriorColor = exteriorColor.trim().replace(/^(?:a|an|the)\s+/i, "");
-    if (exteriorColor.split(/\s+/).length > 4 || exteriorColor.length > 40)
+    exteriorColor = cleanColor(exteriorColor.trim().replace(/^(?:a|an|the)\s+/i, ""));
+    if (!exteriorColor || exteriorColor.split(/\s+/).length > 4 || exteriorColor.length > 40)
       exteriorColor = null;
   }
 
@@ -121,4 +135,52 @@ const parseBatExcerpt = (title, excerpt) => {
   return { exteriorColor, mileage, transmissionRaw };
 };
 
-module.exports = { colorGroupOf, decodeEntities, parseBatExcerpt, parseMileageText, toMiles, transmissionKind };
+/*
+ * Описание лота RM Sotheby's — свободный английский текст («finished in Rosso
+ * Corsa over a Nero interior», «showing 12,345 kilometres on the odometer»,
+ * «a five-speed manual gearbox»). Цвет, пробег (мили или километры) и коробку
+ * берём только если они названы прямо.
+ */
+const parseRmText = (text) => {
+  const clean = decodeEntities(text).replace(/\s+/g, " ");
+
+  let exteriorColor = null;
+  const finished = clean.match(/\b(?:finished|painted|refinished|repainted|resprayed|presented|delivered|supplied|ordered)\s+(?:new\s+)?in\s+(?:its\s+|a\s+|an\s+|the\s+)?(?:original\s+|factory\s+)?(.+?)(?=\s+(?:over|with|and|on|at|by|from|after|before|during|when|that|which|featuring|paint|livery)\b|[,.;:()]|$)/i);
+  if (finished) {
+    exteriorColor = cleanColor(finished[1]);
+    if (!exteriorColor || exteriorColor.split(/\s+/).length > 4 || exteriorColor.length > 40 || /^(?:a|an|the|its|his|her|their|period|ivory|black leather)$/i.test(exteriorColor))
+      exteriorColor = null;
+  }
+
+  // Автор очерка часто пишет без «finished»: «resplendent in Rosso Corsa», «in its original Azzurro». Берём слово краски
+  // только если оно распознано как цвет и сразу за ним не идёт про салон/обивку.
+  if (!exteriorColor) {
+    for (const match of clean.matchAll(/\b(?:in|wearing|sporting|resplendent in|dressed in|clad in)\s+(?:its\s+|a\s+|an\s+|the\s+)?(?:original\s+|factory\s+|period\s+|striking\s+|classic\s+)?((?:[A-Za-z'-]+\s){0,2}[A-Za-z'-]+)(\s+(?:leather|upholstery|interior|cloth|trim|vinyl|top|hood|roof|livery)\b)?/gi)) {
+      if (match[2])
+        continue;
+      const phrase = cleanColor(match[1].split(/\s+(?:with|and|over|on|at|by|from|that|which|a|an|the|to|for|of)\b/i)[0]) || "";
+      const group = colorGroupOf(phrase);
+      if (group && group !== "Другой" && phrase.split(/\s+/).length <= 3) {
+        exteriorColor = phrase;
+        break;
+      }
+    }
+  }
+
+  let mileage = null;
+  const withContext = clean.match(/(?:odometer|indicated|mileage|recorded|showing|shows|reads|reading|covered|driven|from new)[^.]{0,80}?([\d][\d,. ]*\d|\d)\s*(k)?\s*(miles?|mi\b|km|kilomet(?:er|re)s?)/i)
+    || clean.match(/([\d][\d,. ]*\d|\d)\s*(k)?\s*(miles?|mi\b|km|kilomet(?:er|re)s?)\s+(?:from new|on the odometer|indicated|recorded|covered)/i);
+  if (withContext) {
+    const base = Number(withContext[1].replace(/[,. ]/g, ""));
+    const value = withContext[2] ? base * 1000 : base;
+    if (Number.isFinite(value) && value > 0 && value < 2_000_000)
+      mileage = toMiles(value, /^k/i.test(withContext[3]) ? "km" : "miles");
+  }
+
+  const trans = clean.match(/\b((?:[a-z]+-speed\s+)?(?:semi-automatic\s+|dual-clutch\s+|sequential\s+|manual\s+)?(?:manual|automatic|semi-automatic|dual-clutch)(?:\s+(?:transmission|transaxle|gearbox))?)/i)
+    || clean.match(/\b(PDK|DSG|CVT|Tiptronic|Steptronic)\b/i);
+
+  return { exteriorColor, mileage, transmissionRaw: trans ? trans[1] : null };
+};
+
+module.exports = { cleanColor, parseRmText, colorGroupOf, decodeEntities, parseBatExcerpt, parseMileageText, toMiles, transmissionKind };

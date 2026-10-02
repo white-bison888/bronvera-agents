@@ -60,3 +60,29 @@ test("parseBatExcerpt reads the «white-over-beige» shorthand and returns nulls
   const nothing = parseBatExcerpt("1984 Chevrolet Corvette", "A clean example with a long history.");
   assert.deepEqual(nothing, { exteriorColor: null, mileage: null, transmissionRaw: null });
 });
+
+test("colour words need word boundaries: «numbers» is not umber, «thousand» is not sand", () => {
+  assert.equal(colorGroupOf("numbers greater than"), "Другой");
+  assert.equal(colorGroupOf("thousand"), "Другой");
+  assert.equal(colorGroupOf("Burnt Orange"), "Оранжевый");
+  assert.equal(colorGroupOf("Azzurro California"), "Синий");
+});
+
+test("cleanColor strips flattering adjectives and filler nouns from a captured paint phrase", () => {
+  const { cleanColor } = require("../src/rare/sold-fields");
+  assert.equal(cleanColor("harmonious Dove Blue"), "Dove Blue");
+  assert.equal(cleanColor("red exterior and"), "red");
+  assert.equal(cleanColor("livery of blue"), "blue");
+  assert.equal(cleanColor("beautiful"), null);
+});
+
+test("parseRmText takes colour, mileage in miles or kilometres and the gearbox from an RM essay", () => {
+  const { parseRmText } = require("../src/rare/sold-fields");
+  const found = parseRmText("The car is finished in Rosso Corsa over a Nero interior. The odometer shows 12,345 kilometres. A five-speed manual gearbox is fitted.");
+  assert.equal(found.exteriorColor, "Rosso Corsa");
+  assert.equal(found.mileage, 7671);
+  assert.match(found.transmissionRaw, /five-speed manual gearbox/i);
+  const loose = parseRmText("Resplendent in Azzurro with a tan leather interior, it retains its numbers-matching engine.");
+  assert.equal(loose.exteriorColor, "Azzurro");
+  assert.equal(parseRmText("A fine car.").exteriorColor, null);
+});

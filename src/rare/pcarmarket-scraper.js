@@ -5,7 +5,8 @@ const { applyLiteBrowsing } = require("../providers/lite-browsing");
 const { meterBrowserContext } = require("../costs/ledger");
 const { describeTransmission } = require("./transmission");
 const { colorGroupOf, transmissionKind } = require("./sold-fields");
-const { loadSoldArchive, readSoldArchiveCached, saveSoldArchive, yearFromTitle } = require("./sold-archive");
+const { parseVehicleAttributes } = require("./sold-attrs");
+const { loadSoldArchive, readSoldArchiveCached, saveSoldArchive, soldArchiveLocked, yearFromTitle } = require("./sold-archive");
 
 /*
  * BRONVERA Rare, Фаза 3 (01.10.2026): вторая площадка — PCARMARKET.
@@ -170,6 +171,7 @@ const toSoldLot = node => ({
   // Цвет кузова — свободный текст продавца («Guards Red», «Black»); группа для фильтра — по ключевым словам.
   exteriorColor: String(node.schema?.data?.exteriorColor || "").trim() || null,
   colorGroup: colorGroupOf(node.schema?.data?.exteriorColor),
+  ...parseVehicleAttributes(node.title, node.schema?.data?.originalEngineAndTransmission),
   conditionFacts: [],
   photoUrl: node.images?.[0]?.url || null,
 });
@@ -394,7 +396,8 @@ class PcarmarketScraper {
       this.writeStatus({ source: "PCARMARKET", lastRunAt: new Date(now).toISOString(), ok: true, count: lots.length, error: null });
 
       // Архив проданных для Stats — не должен ронять весь прогон активных лотов, если /results подвела.
-      await this.updateSoldArchive().catch(error => this.log("BRONVERA Rare: не добрал архив продаж PCARMARKET:", error.message));
+      if (!soldArchiveLocked(this.dataDir))
+        await this.updateSoldArchive().catch(error => this.log("BRONVERA Rare: не добрал архив продаж PCARMARKET:", error.message));
 
       if (this.alerts) {
         const newLots = lots.filter(lot => !previousIds.has(lot.id));

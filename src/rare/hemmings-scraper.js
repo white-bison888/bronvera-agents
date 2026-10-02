@@ -1,6 +1,7 @@
 const fs = require("fs");
 const path = require("path");
-const { loadSoldArchive, readSoldArchiveCached, saveSoldArchive, yearFromTitle } = require("./sold-archive");
+const { loadSoldArchive, readSoldArchiveCached, saveSoldArchive, soldArchiveLocked, yearFromTitle } = require("./sold-archive");
+const { parseVehicleAttributes } = require("./sold-attrs");
 
 /*
  * BRONVERA Rare, Фаза 3 (01.10.2026): пятая площадка — Hemmings
@@ -115,6 +116,7 @@ const toSoldLot = item => ({
   mileage: null, // не в выдаче — только на странице самого лота
   transmission: null,
   conditionFacts: [],
+  ...parseVehicleAttributes(`${item.long_title || ""} ${item.title || ""}`),
   photoUrl: item.thumbnail?.md?.["4:3"] || item.thumbnail?.md?.full || null,
 });
 
@@ -326,7 +328,8 @@ class HemmingsScraper {
 
       this.writeStatus({ source: "Hemmings", lastRunAt: new Date(now).toISOString(), ok: true, count: lots.length, error: null });
 
-      await this.updateSoldArchive().catch(error => this.log("BRONVERA Rare: не добрал архив продаж Hemmings:", error.message));
+      if (!soldArchiveLocked(this.dataDir))
+        await this.updateSoldArchive().catch(error => this.log("BRONVERA Rare: не добрал архив продаж Hemmings:", error.message));
 
       if (this.alerts) {
         const newLots = lots.filter(lot => !previousIds.has(lot.id));

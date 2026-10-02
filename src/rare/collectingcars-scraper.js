@@ -1,10 +1,12 @@
 const fs = require("fs");
 const path = require("path");
 const { guessMake, guessModel } = require("./title-parser");
-const { loadSoldArchive, readSoldArchiveCached, saveSoldArchive, yearFromTitle } = require("./sold-archive");
+const { loadSoldArchive, readSoldArchiveCached, saveSoldArchive, soldArchiveLocked, yearFromTitle } = require("./sold-archive");
 const { FxRates, reconvertArchive } = require("./fx");
 const { parseMileageText, transmissionKind } = require("./sold-fields");
 const { describeTransmission } = require("./transmission");
+const { engineOf, parseVehicleAttributes } = require("./sold-attrs");
+const { applyPatch } = require("./sold-pages");
 
 /*
  * BRONVERA Rare, Фаза 3 (01.10.2026): шестая площадка — Collecting Cars.
@@ -77,7 +79,7 @@ const statusOf = (closesAt, now) => {
 };
 
 const LIVE_FIELDS = "slug,title,mainImageUrl,currencyCode,currentBid,dtStageEndsUTC,productMake,modelName";
-const SOLD_FIELDS = "slug,title,mainImageUrl,currencyCode,priceSold,isSoldPriceHidden,productMake,productYear,modelName,dtSoldUTC,features";
+const SOLD_FIELDS = "slug,title,mainImageUrl,currencyCode,priceSold,isSoldPriceHidden,productMake,productYear,modelName,dtSoldUTC,features,powertrainName,variantName,generationName,driveSide";
 
 const toRareLot = (doc, now) => {
   const make = doc.productMake || guessMake(doc.title);
@@ -112,6 +114,12 @@ const toRareLot = (doc, now) => {
  */
 const SOLD_CURRENCIES = new Set(Object.keys(FX_BY_CODE).map(code => code.toUpperCase()));
 
+/* Двигатель из поля powertrainName («3.8L Twin-Turbocharged H6») — точнее, чем догадка по названию лота. */
+const engineFromPowertrain = (powertrainName) => {
+  const engine = engineOf(powertrainName);
+  return Object.fromEntries(Object.entries(engine).filter(([, value]) => value !== null));
+};
+
 const toSoldLot = (doc) => {
   const currency = String(doc.currencyCode || "").toUpperCase();
   const soldAt = utcIso(doc.dtSoldUTC);
@@ -140,6 +148,13 @@ const toSoldLot = (doc) => {
     mileage: parseMileageText(doc.features?.mileage),
     transmission: describeTransmission(doc.features?.transmission),
     transmissionKind: transmissionKind(doc.features?.transmission),
+    // Таксономия самой площадки: поколение («997.2»), вариант («Turbo S») и двигатель («3.8L Twin-Turbocharged H6»).
+    ...(doc.generationName ? { generation: doc.generationName } : {}),
+    ...(doc.variantName ? { trimName: doc.variantName } : {}),
+    ...(doc.powertrainName ? { powertrain: doc.powertrainName } : {}),
+    ...parseVehicleAttributes(doc.title),
+    ...engineFromPowertrain(doc.powertrainName),
+    ...(doc.driveSide === "left" ? { steering: "Левый" } : (doc.driveSide === "right" ? { steering: "Правый" } : {})),
     conditionFacts: [],
     photoUrl: photoOf(doc.mainImageUrl),
   };
@@ -250,6 +265,7 @@ class CollectingCarsScraper {
   async updateSoldArchive({ maxPages = SOLD_MAX_PAGES, stopWhenKnown = true } = {}) {
     const archive = loadSoldArchive(this.soldFile());
     let added = 0;
+    let enriched = 0;
 
     for (let page = 1; page <= maxPages; page += 1) {
       const { docs } = await this.search({ stage: "sold", sortBy: "tsSoldUTC:desc", fields: SOLD_FIELDS, page, perPage: SOLD_PER_PAGE });
@@ -257,8 +273,15 @@ class CollectingCarsScraper {
 
       for (const doc of docs) {
         const soldLot = toSoldLot(doc);
-        if (!soldLot || archive[soldLot.id])
+        if (!soldLot)
           continue;
+        if (archive[soldLot.id]) {
+          // Уже в архиве — дописываем новые поля (комплектация, двигатель, привод), не трогая известное и цену.
+          const { id, salePrice, soldAt, salePriceLocal, currency, sold, ...details } = soldLot;
+          if (applyPatch(archive[soldLot.id], details) > 0)
+            enriched += 1;
+          continue;
+        }
         try {
           Object.assign(soldLot, await this.fx.convert(soldLot.salePriceLocal, soldLot.currency, soldLot.soldAt));
         }
@@ -278,9 +301,9 @@ class CollectingCarsScraper {
 
     const reconverted = await reconvertArchive(archive, this.fx, this.log);
 
-    if (added > 0 || reconverted > 0) {
+    if (added > 0 || reconverted > 0 || enriched > 0) {
       saveSoldArchive(this.soldFile(), archive);
-      this.log(`BRONVERA Rare: добавил ${added} проданных лотов Collecting Cars в архив (всего ${Object.keys(archive).length})`);
+      this.log(`BRONVERA Rare: добавил ${added} проданных лотов Collecting Cars в архив (всего ${Object.keys(archive).length}, дополнил полями ${enriched})`);
     }
 
     return added;
@@ -306,7 +329,8 @@ class CollectingCarsScraper {
 
       this.writeStatus({ source: "Collecting Cars", lastRunAt: new Date(now).toISOString(), ok: true, count: lots.length, error: null });
 
-      await this.updateSoldArchive().catch(error => this.log("BRONVERA Rare: не добрал архив продаж Collecting Cars:", error.message));
+      if (!soldArchiveLocked(this.dataDir))
+        await this.updateSoldArchive().catch(error => this.log("BRONVERA Rare: не добрал архив продаж Collecting Cars:", error.message));
 
       if (this.alerts) {
         const newLots = lots.filter(lot => !previousIds.has(lot.id));

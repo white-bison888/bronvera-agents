@@ -44,7 +44,7 @@ test("points() returns compact rows with dictionaries instead of repeated string
 
   const { fields, dict, rows } = index.points();
 
-  assert.deepEqual(fields, ["id", "soldAt", "salePrice", "source", "make", "model", "year", "mileage", "transmission", "color", "sold"]);
+  assert.deepEqual(fields, ["id", "soldAt", "salePrice", "source", "make", "model", "year", "mileage", "transmission", "color", "sold", "body", "engine", "drive", "trim", "generation"]);
   assert.deepEqual(dict.model.sort(), ["911", "Cayman"]);
   assert.equal(rows.length, 2);
 
@@ -122,4 +122,50 @@ test("lots without a date or price never enter the index", () => {
 
 test("fullLot keeps what the archive already has", () => {
   assert.equal(fullLot({ id: "x", mileage: 10 }).mileage, 10);
+});
+
+test("points() carries the model line as «model» and the rest of the name as «trim», plus body, engine and drive", () => {
+  const dir = tmpDir();
+  const many = (model, n, extra = {}) => Array.from({ length: n }, (_, i) => lot(`${model}-${i}`, { model, ...extra }));
+  const index = new SoldIndex([fakeScraper(dir, "a", [
+    ...many("911 Turbo", 8, { bodyStyle: "Купе", cylinders: 6, engineLayout: "Оппозитный", drivetrain: "Полный" }),
+    ...many("911 Carrera", 8),
+    ...many("911 GT3", 4),
+    lot("cc1", { model: "911 Turbo", trimName: "Turbo S" }),
+  ])]);
+
+  const { dict, rows } = index.points();
+  const byId = Object.fromEntries(rows.map(row => [row[0], row]));
+  const turbo = byId["911 Turbo-0"];
+
+  assert.equal(dict.model[turbo[5]], "911");
+  assert.equal(dict.trim[turbo[14]], "Turbo");
+  assert.equal(dict.body[turbo[11]], "Купе");
+  assert.equal(dict.engine[turbo[12]], "Оппозитный 6");
+  assert.equal(dict.drive[turbo[13]], "Полный");
+  assert.equal(dict.trim[byId.cc1[14]], "Turbo S"); // комплектация площадки (таксономия Collecting Cars) важнее догадки по названию
+  assert.equal(byId["911 Carrera-0"][11], -1); // кузов не известен
+});
+
+test("comparables() narrows by trim, body, gearbox, engine, years and mileage, then relaxes from the end when there are too few", () => {
+  const dir = tmpDir();
+  const car = (id, o = {}) => lot(id, { model: "911 Turbo", year: 1996, bodyStyle: "Купе", transmissionKind: "manual", cylinders: 6, engineLayout: "Оппозитный", mileage: 30000, salePrice: 100000, ...o });
+  const filler = Array.from({ length: 10 }, (_, i) => lot(`c${i}`, { model: "911 Carrera", year: 1996 }));
+  const turbo = Array.from({ length: 4 }, (_, i) => car(`t${i}`, { salePrice: 100000 + i * 10000 }));
+  const index = new SoldIndex([fakeScraper(dir, "a", [car("me", { salePrice: 125000 }), ...turbo, car("cab", { bodyStyle: "Кабриолет" }), car("auto", { transmissionKind: "automatic" }), car("far", { year: 2008 }), car("unsold", { sold: false }), ...filler, lot("other-make", { make: "Ferrari", model: "911 Turbo" })])]);
+
+  const strict = index.comparables("me", { minCount: 3 });
+  assert.equal(strict.line, "Porsche 911");
+  assert.ok(strict.criteria.includes("Turbo") && strict.criteria.includes("Купе") && strict.criteria.includes("механика"));
+  assert.deepEqual(strict.relaxed, []);
+  assert.equal(strict.count, 4); // t0..t3: без кабриолета, автомата, далёкого года, непроданного, чужой марки
+  assert.equal(strict.median, 110000);
+  assert.equal(strict.lots.length, 4);
+  assert.ok(strict.lots.every(l => l.id !== "me"));
+
+  const relaxed = index.comparables("me", { minCount: 6 });
+  assert.ok(relaxed.relaxed.length > 0); // мало равных — сняли самые слабые признаки и сказали об этом
+  assert.ok(relaxed.count >= 6 || relaxed.criteria.length === 0);
+
+  assert.equal(index.comparables("nope"), null);
 });
