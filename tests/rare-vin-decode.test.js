@@ -95,7 +95,7 @@ test("enrichWithVinDecode surfaces an NHTSA failure instead of marking lots as c
 });
 
 test("a decode records which fields came from the VIN, what the VIN says about the car, and where it disagrees with the lot", () => {
-  const lot = { make: "Porsche", year: 2023, cylinders: 8, displacement: 4.0, engineLayout: "V" };
+  const lot = { make: "Porsche", year: 2021, cylinders: 8, displacement: 4.0, engineLayout: "V" };
   applyDecoded(lot, porsche);
 
   assert.ok(lot.vinFields.includes("cylinders"));
@@ -107,7 +107,7 @@ test("a decode records which fields came from the VIN, what the VIN says about t
   assert.equal(lot.vinInfo.year, 2024);
   assert.equal(lot.vinInfo.clean, true);
   assert.deepEqual(lot.vinCheck, [
-    { field: "year", lot: 2023, vin: 2024 },
+    { field: "year", lot: 2021, vin: 2024 },
     { field: "displacement", lot: 4, vin: 3.7 },
     { field: "cylinders", lot: 8, vin: 6 },
   ]);
@@ -124,5 +124,11 @@ test("a repeated decode recomputes provenance from scratch; force re-checks lots
   await enrichWithVinDecode({ lots: [lot], delayMs: 0, sleep: async () => {}, save: () => {}, fetchImpl, force: true });
   assert.equal(calls, 1);
   assert.ok(!lot.vinFields.includes("stale"));
+  assert.equal(lot.vinCheck, undefined);
+});
+
+test("a one-year difference between the VIN model year and the lot year is normal and is not reported", () => {
+  const lot = { make: "Porsche", year: 2023 };
+  applyDecoded(lot, porsche);
   assert.equal(lot.vinCheck, undefined);
 });

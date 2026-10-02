@@ -131,7 +131,8 @@ const applyDecoded = (lot, result, now = Date.now()) => {
   lot.vinInfo = Object.fromEntries(Object.entries(info).filter(([, value]) => value !== null));
 
   const check = [];
-  if (info.year && typeof lot.year === "number" && Math.abs(info.year - lot.year) >= 1)
+  // Модельный год по VIN и год в названии часто различаются на единицу (машину продали в следующем календарном году) — это не ошибка; от двух лет — отмечаем.
+  if (info.year && typeof lot.year === "number" && Math.abs(info.year - lot.year) >= 2)
     check.push({ field: "year", lot: lot.year, vin: info.year });
   if (clean && Number.isFinite(displacement) && displacement > 0 && typeof lot.displacement === "number" && Math.abs(lot.displacement - displacement) > 0.15)
     check.push({ field: "displacement", lot: lot.displacement, vin: displacement });
