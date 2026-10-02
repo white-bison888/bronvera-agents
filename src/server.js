@@ -1025,19 +1025,29 @@ app.get("/api/rare/lots", (req, res) => {
 /*
  * Вкладка Stats (02.10.2026, просьба Mikita: «очень важно получить
  * правильную финальную стоимость лота») — реальная история проданных
- * лотов вместо примерных данных. Источники со своим архивом (readSold):
- * Bring a Trailer, PCARMARKET, Cars & Bids. RM Sotheby's своей ставки не
- * знает вовсе, Hemmings/Collecting Cars результатов пока не отдают —
- * у них просто нет readSold, пропускаем без ошибки. Сортировка — от
+ * лотов вместо примерных данных. Источники со своим архивом (readSold) —
+ * все шесть; у источника без readSold просто пропускаем без ошибки. Сортировка — от
  * недавних продаж к старым, самое интересное сайту показывать первым.
  */
+/*
+ * Архивы копятся с первого дня (у RM Sotheby's — с 2003 года, больше 10 тысяч
+ * лотов, ~10 МБ), а вкладке Stats столько сразу не нужно. По умолчанию
+ * отдаём последние два года; ?since=ГГГГ-ММ-ДД меняет границу, ?all=1 —
+ * вообще всё. Поле total — сколько лотов в архиве целиком.
+ */
+const SOLD_DEFAULT_WINDOW_MS = 730 * 24 * 3600 * 1000;
+
 app.get("/api/rare/sold", (req, res) => {
-  const sold = rareSources
+  const all = rareSources
     .filter(({ scraper }) => typeof scraper.readSold === "function")
     .flatMap(({ scraper }) => scraper.readSold())
     .sort((a, b) => new Date(b.soldAt || 0) - new Date(a.soldAt || 0));
 
-  res.json({ success: true, count: sold.length, lots: sold });
+  const sinceParam = Date.parse(String(req.query.since || ""));
+  const since = req.query.all === "1" ? 0 : (Number.isFinite(sinceParam) ? sinceParam : Date.now() - SOLD_DEFAULT_WINDOW_MS);
+  const sold = all.filter(lot => Date.parse(lot.soldAt || 0) >= since);
+
+  res.json({ success: true, count: sold.length, total: all.length, lots: sold });
 });
 
 /*

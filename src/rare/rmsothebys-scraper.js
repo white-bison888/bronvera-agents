@@ -246,7 +246,7 @@ class RmSothebysScraper {
     });
 
     if (!response.ok)
-      throw new Error(`страница аукциона ${code} ответила ${response.status}`);
+      throw Object.assign(new Error(`страница аукциона ${code} ответила ${response.status}`), { status: response.status });
 
     const html = await response.text();
     const match = html.match(/"@type":"\s*Event"[\s\S]{0,500}?"endDate":"(\d{4}-\d{2}-\d{2})"/);
@@ -421,6 +421,9 @@ class RmSothebysScraper {
       }
       catch (error) {
         this.log(`BRONVERA Rare: не собрал итоги RM Sotheby's ${code}: ${error.message}`);
+        // Страницы аукциона нет вовсе (старые торги) — даты лотам взять неоткуда, больше не пробуем.
+        if (error.status === 404)
+          auctions[code] = { endDate: null, checkedAt: new Date(now).toISOString() };
       }
     }
 

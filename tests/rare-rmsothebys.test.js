@@ -374,3 +374,20 @@ test("run() still succeeds when the sold-archive fetch fails", async () => {
 
   fs.rmSync(dataDir, { recursive: true, force: true });
 });
+
+test("updateSoldArchive stops retrying an auction whose own page does not exist (404)", async () => {
+  const dataDir = tmpDir();
+  const base = stubSoldFetch({ resultsCodes: ["old04"], itemsByCode: { OLD04: [soldItem({ id: "o1" })] } });
+  const fetchImpl = async (url, options) => /\/auctions\/old04\/$/.test(String(url)) ? { ok: false, status: 404 } : base.fetchImpl(url, options);
+  const scraper = new RmSothebysScraper({ dataDir, fetchImpl, log: () => {} });
+
+  await scraper.updateSoldArchive();
+  assert.deepEqual(scraper.readSold(), []); // даты нет — лот не архивируем
+
+  const before = base.calls.filter(href => href.includes("SearchLots")).length;
+  scraper.fetchImpl = base.fetchImpl;
+  await scraper.updateSoldArchive();
+  assert.equal(base.calls.filter(href => href.includes("SearchLots")).length, before); // повторно не ходили
+
+  fs.rmSync(dataDir, { recursive: true, force: true });
+});
