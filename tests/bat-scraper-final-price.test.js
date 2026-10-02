@@ -31,6 +31,8 @@ test("an ended lot's final price overrides the stale index snapshot", async () =
   const detailHtml = auctionResultHtml("Sold for", "1,261,000");
 
   const fetchImpl = async (url) => {
+    if (String(url).includes("listings-filter"))
+      return { ok: false, status: 404, json: async () => ({}) }; // список завершённых аукционов — не предмет этого теста
     if (String(url).includes("/auctions/"))
       return { ok: true, text: async () => htmlWithListings(items) };
     return { ok: true, text: async () => detailHtml };
@@ -62,6 +64,8 @@ test("a lot cached while open gets its final price backfilled once it closes", a
 
   let detailFetches = 0;
   const fetchImpl = async (url) => {
+    if (String(url).includes("listings-filter"))
+      return { ok: false, status: 404, json: async () => ({}) }; // список завершённых аукционов — не предмет этого теста
     if (String(url).includes("/auctions/"))
       return { ok: true, text: async () => htmlWithListings(items) };
     detailFetches += 1;
@@ -86,6 +90,8 @@ test("an already-resolved ended lot is not fetched again", async () => {
 
   let detailFetches = 0;
   const fetchImpl = async (url) => {
+    if (String(url).includes("listings-filter"))
+      return { ok: false, status: 404, json: async () => ({}) }; // список завершённых аукционов — не предмет этого теста
     if (String(url).includes("/auctions/"))
       return { ok: true, text: async () => htmlWithListings(items) };
     detailFetches += 1;
@@ -113,6 +119,8 @@ test("a lot our index thinks is ended but has no result yet is retried, not lock
 
   let detailFetches = 0;
   const fetchImpl = async (url) => {
+    if (String(url).includes("listings-filter"))
+      return { ok: false, status: 404, json: async () => ({}) }; // список завершённых аукционов — не предмет этого теста
     if (String(url).includes("/auctions/"))
       return { ok: true, text: async () => htmlWithListings(items) };
     detailFetches += 1;
@@ -141,6 +149,8 @@ test("reserve not met still captures the final high bid and marks it unsold", as
   const detailHtml = auctionResultHtml("Bid to", "240,000");
 
   const fetchImpl = async (url) => {
+    if (String(url).includes("listings-filter"))
+      return { ok: false, status: 404, json: async () => ({}) }; // список завершённых аукционов — не предмет этого теста
     if (String(url).includes("/auctions/"))
       return { ok: true, text: async () => htmlWithListings(items) };
     return { ok: true, text: async () => detailHtml };
@@ -169,6 +179,8 @@ test("an open lot keeps the index bid — no result page to read yet", async () 
   }];
 
   const fetchImpl = async (url) => {
+    if (String(url).includes("listings-filter"))
+      return { ok: false, status: 404, json: async () => ({}) }; // список завершённых аукционов — не предмет этого теста
     if (String(url).includes("/auctions/"))
       return { ok: true, text: async () => htmlWithListings(items) };
     return { ok: true, text: async () => "<strong>Listing Details</strong><ul></ul>" };

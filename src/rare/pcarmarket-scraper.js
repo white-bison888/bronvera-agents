@@ -4,6 +4,7 @@ const vm = require("vm");
 const { applyLiteBrowsing } = require("../providers/lite-browsing");
 const { meterBrowserContext } = require("../costs/ledger");
 const { describeTransmission } = require("./transmission");
+const { colorGroupOf, transmissionKind } = require("./sold-fields");
 const { loadSoldArchive, readSoldArchiveCached, saveSoldArchive, yearFromTitle } = require("./sold-archive");
 
 /*
@@ -165,6 +166,10 @@ const toSoldLot = node => ({
   estimateMax: estimateOf(node.estimates?.high),
   mileage: milesOf(node.schema?.data?.odometerValue, node.schema?.data?.odometerUnit),
   transmission: describeTransmission(node.schema?.data?.transmission),
+  transmissionKind: transmissionKind(node.schema?.data?.transmission),
+  // Цвет кузова — свободный текст продавца («Guards Red», «Black»); группа для фильтра — по ключевым словам.
+  exteriorColor: String(node.schema?.data?.exteriorColor || "").trim() || null,
+  colorGroup: colorGroupOf(node.schema?.data?.exteriorColor),
   conditionFacts: [],
   photoUrl: node.images?.[0]?.url || null,
 });

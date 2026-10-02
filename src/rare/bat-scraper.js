@@ -3,6 +3,8 @@ const path = require("path");
 const { describeTransmission } = require("./transmission");
 const { guessMake, guessModel } = require("./title-parser");
 const { loadSoldArchive, readSoldArchiveCached, saveSoldArchive, yearFromTitle } = require("./sold-archive");
+const { FxRates } = require("./fx");
+const { colorGroupOf, decodeEntities: decodeBatEntities, parseBatExcerpt, transmissionKind } = require("./sold-fields");
 
 /*
  * BRONVERA Rare, Фаза 1 (план 30.09.2026): первая реальная площадка —
@@ -154,6 +156,74 @@ const toRareLot = (item, now) => {
  * sold: null (ещё не знаем исход — см. needsResult в fetchMissingDetails)
  * сюда не идёт: архивируем только то, что действительно разрешилось.
  */
+/*
+ * Итоги торгов за всю историю (02.10.2026, просьба Mikita): у BaT есть
+ * открытый список завершённых аукционов — тот же, что страница
+ * /auctions/results/, JSON по адресу wp-json/.../listings-filter. Он отдаёт
+ * по 60 лотов на страницу вместе с ценой («Sold for USD $26,500» — продан,
+ * «Bid to …» — резерв не достигнут), датой закрытия, фото и коротким
+ * описанием, из которого берём цвет, пробег и коробку (для лотов «из
+ * индекса /auctions/» этого нет, а страницу каждого лота разбирать —
+ * десятки тысяч запросов).
+ *
+ * Ограничения самого BaT: глубже ~165 страниц (≈10 000 лотов) выборка пустая,
+ * поэтому история режется по «эпохам» выпуска (параметр eras) — по 10 000
+ * самых свежих лотов каждой эпохи. А на частые запросы он отвечает «Slow
+ * down your API calls» — идём с паузой и ждём, если просят притормозить.
+ */
+const COMPLETED_URL = "https://bringatrailer.com/wp-json/bringatrailer/1.0/data/listings-filter";
+const ERAS = ["2020", "2010", "2000", "1990", "1980", "1970", "1960", "1950", "1940", "1930", "1920", "1910", "1900", "pre-1900"];
+const COMPLETED_PER_PAGE = 60;
+const COMPLETED_MAX_PAGE = 165;
+const REQUEST_GAP_MS = 1500;
+const SLOW_DOWN_WAIT_MS = 30_000;
+
+// Мотоциклы, скутеры и прочее не-авто попадают в тот же список без категорий — отсекаем по названию.
+const NOT_A_CAR = /\b(motorcycle|scooter|moped|sidecar|snowmobile|tractor|Harley-Davidson|Ducati|Vespa|Yamaha|Kawasaki|Aprilia|Moto Guzzi|Piaggio|Lambretta)\b/i;
+
+const parseCompletedResult = (item) => {
+  const match = String(item.sold_text || "").match(/^(Sold for|Bid to)\s+(?:([A-Z]{3})\s+)?[^\d]*([\d,]+)/);
+  if (!match)
+    return null; // «Withdrawn by BaT» и т. п. — результата торгов нет
+  const price = typeof item.current_bid === "number" ? item.current_bid : Number(match[3].replace(/,/g, ""));
+  if (!Number.isFinite(price) || price <= 0 || !item.sold_text_timestamp)
+    return null;
+  return { sold: match[1] === "Sold for", price, currency: String(item.currency || match[2] || "USD").toUpperCase() };
+};
+
+const toCompletedSoldLot = (item) => {
+  const result = parseCompletedResult(item);
+  if (!result)
+    return null;
+
+  const title = decodeBatEntities(item.title);
+  if (NOT_A_CAR.test(title))
+    return null;
+
+  const make = guessMake(title);
+  const details = parseBatExcerpt(title, item.excerpt);
+
+  return {
+    id: `bat-${item.id}`,
+    title,
+    make,
+    model: guessModel(title, make),
+    year: yearFromTitle(title),
+    source: "Bring a Trailer",
+    sourceUrl: item.url,
+    soldAt: new Date(item.sold_text_timestamp * 1000).toISOString(),
+    salePrice: result.currency === "USD" ? result.price : null, // для других валют — по курсу на день продажи, см. updateSoldFromCompleted
+    ...(result.currency === "USD" ? {} : { salePriceLocal: result.price, currency: result.currency }),
+    sold: result.sold,
+    mileage: details.mileage,
+    transmission: describeTransmission(details.transmissionRaw),
+    transmissionKind: transmissionKind(details.transmissionRaw),
+    exteriorColor: details.exteriorColor,
+    colorGroup: colorGroupOf(details.exteriorColor),
+    photoUrl: item.thumbnail_url || null,
+  };
+};
+
 const toSoldLot = enrichedLot => ({
   id: enrichedLot.id,
   title: enrichedLot.title,
@@ -180,8 +250,10 @@ class BatScraper {
     now = () => Date.now(),
     log = (...args) => console.log(...args),
     alerts = null, // RareAlerts — необязателен, чтобы тесты и ручные прогоны не требовали Telegram
+    fx = new FxRates({ file: path.join(dataDir, "fx-rates.json") }),
+    sleep = ms => new Promise(resolve => setTimeout(resolve, ms)),
   } = {}) {
-    Object.assign(this, { fetchImpl, dataDir, now, log, alerts });
+    Object.assign(this, { fetchImpl, dataDir, now, log, alerts, fx, sleep });
   }
 
   lotsFile() {
@@ -348,6 +420,99 @@ class BatScraper {
     return Array.isArray(data.items) ? data.items : [];
   }
 
+  async fetchCompletedPage(era, page) {
+    const url = `${COMPLETED_URL}?page=${page}&per_page=${COMPLETED_PER_PAGE}&get_items=1&get_stats=0&sort=td&eras=${encodeURIComponent(era)}`;
+
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      const response = await this.fetchImpl(url, { headers: { "User-Agent": "Mozilla/5.0 (compatible; BRONVERA-Rare/1.0)" } });
+      const body = await response.json().catch(() => null);
+
+      if (response.ok && body && Array.isArray(body.items))
+        return body.items;
+
+      if (/slow down/i.test(String(body?.message || "")) && attempt < 3) {
+        await this.sleep(SLOW_DOWN_WAIT_MS * (attempt + 1));
+        continue;
+      }
+
+      throw new Error(`BaT (завершённые, ${era}, страница ${page}) ответил ${response.status}${body?.message ? `: ${body.message}` : ""}`);
+    }
+
+    return [];
+  }
+
+  /*
+   * Ежедневный заход берёт 3–4 первые страницы каждой эпохи (новые итоги
+   * лежат сверху) и останавливается, когда страница целиком знакома.
+   * Для разового добора истории: maxPages = 165, stopWhenKnown = false.
+   * Лоты в другой валюте считаются по курсу ЕЦБ на день продажи (fx.js);
+   * если курса нет — лот пропускаем, попробуем в следующий раз.
+   */
+  async updateSoldFromCompleted({ eras = ERAS, maxPages = 4, stopWhenKnown = true, sinceMs = null } = {}) {
+    const archive = loadSoldArchive(this.soldFile());
+    let added = 0;
+    let requests = 0;
+
+    for (const era of eras) {
+      let eraAdded = 0;
+      let eraEnriched = 0;
+
+      for (let page = 1; page <= Math.min(maxPages, COMPLETED_MAX_PAGE); page += 1) {
+        if (requests > 0)
+          await this.sleep(REQUEST_GAP_MS);
+        requests += 1;
+
+        const items = await this.fetchCompletedPage(era, page);
+        let newOnPage = 0;
+        let reachedCutoff = false;
+
+        for (const item of items) {
+          const lot = toCompletedSoldLot(item);
+          if (!lot)
+            continue;
+          if (sinceMs !== null && Date.parse(lot.soldAt) < sinceMs) {
+            reachedCutoff = true;
+            continue;
+          }
+          if (archive[lot.id]) {
+            // Лот уже был в архиве без цвета/пробега (из индекса /auctions/) — дополняем, не затираем.
+            const known = archive[lot.id];
+            for (const key of ["mileage", "transmission", "transmissionKind", "exteriorColor", "colorGroup"]) {
+              if ((known[key] === null || known[key] === undefined) && lot[key] !== null && lot[key] !== undefined) {
+                known[key] = lot[key];
+                eraEnriched += 1;
+              }
+            }
+            continue;
+          }
+          if (lot.salePrice === null) {
+            try {
+              Object.assign(lot, await this.fx.convert(lot.salePriceLocal, lot.currency, lot.soldAt));
+            }
+            catch (error) {
+              this.log(`BRONVERA Rare: BaT ${lot.id}: курс на день продажи не получен (${error.message})`);
+              continue;
+            }
+          }
+          archive[lot.id] = lot;
+          newOnPage += 1;
+        }
+
+        added += newOnPage;
+        eraAdded += newOnPage;
+
+        if (items.length < COMPLETED_PER_PAGE || reachedCutoff || (stopWhenKnown && newOnPage === 0))
+          break;
+      }
+
+      if (eraAdded > 0 || eraEnriched > 0)
+        saveSoldArchive(this.soldFile(), archive); // контрольная точка: при сбое на следующей эпохе уже добытое не теряется
+      this.log(`BRONVERA Rare: BaT, эпоха ${era}: добавил ${eraAdded} (всего в архиве ${Object.keys(archive).length})`);
+    }
+
+    return added;
+  }
+
   async run() {
     const now = this.now();
     // До перезаписи — чтобы потом отличить реально новые лоты от уже виденных (для алертов).
@@ -381,6 +546,7 @@ class BatScraper {
       this.writeStatus({ source: "Bring a Trailer", lastRunAt: new Date(now).toISOString(), ok: true, count: enriched.length, error: null });
 
       this.updateSoldArchive(enriched);
+      await this.updateSoldFromCompleted().catch(error => this.log("BRONVERA Rare: не добрал итоги BaT из списка завершённых:", error.message));
 
       if (this.alerts) {
         const newLots = enriched.filter(lot => !previousIds.has(lot.id));

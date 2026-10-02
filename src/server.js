@@ -32,6 +32,7 @@ const CarsAndBidsScraper = require("./rare/carsandbids-scraper");
 const HemmingsScraper = require("./rare/hemmings-scraper");
 const CollectingCarsScraper = require("./rare/collectingcars-scraper");
 const RareAlerts = require("./rare/alerts");
+const { SoldIndex } = require("./rare/sold-index");
 const { buildRareCostSummary } = require("./rare/cost-report");
 const costLedger = require("./costs/ledger");
 const { createDifyUsage, UUID } = require("./costs/dify-usage");
@@ -1039,28 +1040,44 @@ app.get("/api/rare/lots", (req, res) => {
  */
 const SOLD_DEFAULT_WINDOW_MS = 730 * 24 * 3600 * 1000;
 
-app.get("/api/rare/sold", (req, res) => {
-  const all = rareSources
-    .filter(({ scraper }) => typeof scraper.readSold === "function")
-    .flatMap(({ scraper }) => scraper.readSold())
-    .sort((a, b) => new Date(b.soldAt || 0) - new Date(a.soldAt || 0));
+const soldIndex = new SoldIndex(rareSources.map(({ scraper }) => scraper));
 
+const dateParam = (value) => {
+  const ms = Date.parse(String(value || ""));
+  return Number.isFinite(ms) ? ms : null;
+};
+
+app.get("/api/rare/sold", (req, res) => {
   // Одна запись по id — для страницы проданного лота: она может быть старше окна, которое видит список.
   if (req.query.id) {
-    const lot = all.find(item => item.id === String(req.query.id));
-    return res.json({ success: true, count: lot ? 1 : 0, total: all.length, lots: lot ? [lot] : [] });
+    const lot = soldIndex.lot(String(req.query.id));
+    return res.json({ success: true, count: lot ? 1 : 0, total: soldIndex.total(), lots: lot ? [lot] : [] });
   }
 
-  const sinceParam = Date.parse(String(req.query.since || ""));
-  const since = req.query.all === "1" ? 0 : (Number.isFinite(sinceParam) ? sinceParam : Date.now() - SOLD_DEFAULT_WINDOW_MS);
-  const untilParam = Date.parse(String(req.query.until || ""));
-  const until = Number.isFinite(untilParam) ? untilParam : Infinity;
-  const sold = all.filter((lot) => {
-    const at = Date.parse(lot.soldAt || 0);
-    return at >= since && at < until;
-  });
+  const since = req.query.all === "1" ? null : (dateParam(req.query.since) ?? Date.now() - SOLD_DEFAULT_WINDOW_MS);
+  const lots = soldIndex.points({ since, until: dateParam(req.query.until) });
+  const full = soldIndex.lotsByIds(lots.rows.map(row => row[0]));
 
-  res.json({ success: true, count: sold.length, total: all.length, lots: sold });
+  res.json({ success: true, count: full.length, total: soldIndex.total(), lots: full });
+});
+
+/*
+ * Компактный вид для графиков и фильтров Stats (см. sold-index.js): строки
+ * вместо объектов, повторяющиеся слова — в словарях. Сайт запрашивает его
+ * кусками по кварталам/годам (?since=…&until=…), а полные записи — только
+ * для лотов, которые показывает на экране, через POST /api/rare/sold/lots.
+ */
+app.get("/api/rare/sold/points", (req, res) => {
+  const since = req.query.all === "1" ? null : dateParam(req.query.since);
+  const { fields, dict, rows } = soldIndex.points({ since, until: dateParam(req.query.until) });
+  res.json({ success: true, total: soldIndex.total(), count: rows.length, fields, dict, rows });
+});
+
+const SOLD_LOTS_MAX_IDS = 500;
+
+app.post("/api/rare/sold/lots", (req, res) => {
+  const ids = Array.isArray(req.body?.ids) ? req.body.ids.filter(id => typeof id === "string").slice(0, SOLD_LOTS_MAX_IDS) : [];
+  res.json({ success: true, lots: soldIndex.lotsByIds(ids) });
 });
 
 /*

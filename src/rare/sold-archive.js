@@ -43,7 +43,8 @@ const readSoldArchiveCached = (file) => {
 
 const saveSoldArchive = (file, archive) => {
   fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(file, JSON.stringify(archive, null, 2));
+  // Без отступов: у BaT десятки тысяч лотов, красивое форматирование удваивало бы файл.
+  fs.writeFileSync(file, JSON.stringify(archive));
 };
 
 /* Год — первый найденный токен 19xx/20xx в заголовке, как и у guessMake/guessModel. */

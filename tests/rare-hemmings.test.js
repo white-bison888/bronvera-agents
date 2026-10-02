@@ -268,7 +268,10 @@ test("updateSoldArchive keeps accumulating, never duplicates, and stops paging o
   const scraper = new HemmingsScraper({
     dataDir,
     fetchImpl: async (url) => {
-      const page = Number(new URL(url).searchParams.get("page"));
+      const params = new URL(url).searchParams;
+      if (params.get("transmission_type[]"))
+        return { ok: true, json: async () => searchResponse([]) }; // списки по коробке — не предмет этого теста
+      const page = Number(params.get("page"));
       pages.push(page);
       return { ok: true, json: async () => searchResponse(page === 1 ? fullPage(1) : page === 2 ? fullPage(51) : fullPage(1)) };
     },
@@ -323,6 +326,53 @@ test("run() still succeeds when the sold-archive fetch fails", async () => {
   assert.equal(lots.length, 1);
   assert.equal(scraper.readStatus().ok, true);
   assert.deepEqual(scraper.readSold(), []);
+
+  fs.rmSync(dataDir, { recursive: true, force: true });
+});
+
+test("updateSoldArchive marks transmission from the manual/auto filtered lists, leaving unknown ones unmarked", async () => {
+  const dataDir = tmpDir();
+  const scraper = new HemmingsScraper({
+    dataDir,
+    fetchImpl: async (url) => {
+      const filter = new URL(url).searchParams.get("transmission_type[]");
+      const items = filter === "manual" ? [soldItem(1)] : filter === "auto" ? [soldItem(2)] : [soldItem(1), soldItem(2), soldItem(3)];
+      return { ok: true, json: async () => searchResponse(items) };
+    },
+    log: () => {},
+  });
+
+  await scraper.updateSoldArchive();
+
+  const byId = Object.fromEntries(scraper.readSold().map(l => [l.id, l]));
+  assert.equal(byId["hemmings-1"].transmissionKind, "manual");
+  assert.equal(byId["hemmings-1"].transmission, "Механика");
+  assert.equal(byId["hemmings-2"].transmissionKind, "automatic");
+  assert.equal(byId["hemmings-2"].transmission, "Автомат");
+  assert.equal(byId["hemmings-3"].transmissionKind, undefined);
+
+  fs.rmSync(dataDir, { recursive: true, force: true });
+});
+
+test("a deep backfill (stopWhenKnown: false) walks every page up to maxPages", async () => {
+  const dataDir = tmpDir();
+  const pages = [];
+  const fullPage = from => Array.from({ length: 50 }, (_, i) => soldItem(from + i));
+  const scraper = new HemmingsScraper({
+    dataDir,
+    fetchImpl: async (url) => {
+      const params = new URL(url).searchParams;
+      if (params.get("transmission_type[]"))
+        return { ok: true, json: async () => searchResponse([]) };
+      const page = Number(params.get("page"));
+      pages.push(page);
+      return { ok: true, json: async () => searchResponse(fullPage(page * 100)) };
+    },
+    log: () => {},
+  });
+
+  assert.equal(await scraper.updateSoldArchive({ maxPages: 3, stopWhenKnown: false }), 150);
+  assert.deepEqual(pages, [1, 2, 3]);
 
   fs.rmSync(dataDir, { recursive: true, force: true });
 });

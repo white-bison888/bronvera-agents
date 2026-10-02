@@ -20,7 +20,7 @@ const { loadSoldArchive, readSoldArchiveCached, saveSoldArchive, yearFromTitle }
 const LISTINGS_URL = "https://api.hemmings.com/v2/search/listings";
 const CLOSING_SOON_MS = 48 * 3600 * 1000;
 const SOLD_PER_PAGE = 50;
-const SOLD_MAX_PAGES = 20; // потолок на один заход: первый раз добираем историю, дальше хватает одной-двух страниц
+const SOLD_MAX_PAGES = 4; // потолок на один заход: первый раз добираем историю, дальше хватает одной-двух страниц
 
 /*
  * Публичный ключ фронтенда Hemmings, не секрет учётной записи — его
@@ -216,7 +216,7 @@ class HemmingsScraper {
    * странице есть хоть один лот, которого ещё нет в архиве — как только
    * страница целиком уже знакомая, дальше идти незачем.
    */
-  async fetchSoldPage(page) {
+  async fetchSoldPage(page, transmission = null) {
     const params = new URLSearchParams({
       adtype: "cars-for-sale",
       "listing_type[]": "hemmings_auctions_only",
@@ -226,6 +226,8 @@ class HemmingsScraper {
       per_page: String(SOLD_PER_PAGE),
       members_preview: "false",
     });
+    if (transmission)
+      params.set("transmission_type[]", transmission);
 
     const response = await this.fetchImpl(`${LISTINGS_URL}?${params}`, { headers: HEMMINGS_HEADERS });
 
@@ -236,11 +238,35 @@ class HemmingsScraper {
     return data.results || [];
   }
 
-  async updateSoldArchive() {
+  /*
+   * В карточке выдачи Hemmings нет ни пробега, ни цвета, ни коробки (они
+   * только на странице лота, закрытой Cloudflare), но у поиска есть
+   * фильтр transmission_type — спрашиваем отдельно «только механика» и
+   * «только автомат» и по этим спискам помечаем лоты. API называет
+   * автомат значением "auto". Лоты, не попавшие ни в тот, ни в другой
+   * список (у них коробка не указана), остаются без отметки.
+   */
+  async fetchTransmissionIds(maxPages) {
+    const kinds = new Map();
+
+    for (const [filter, kind] of [["manual", "manual"], ["auto", "automatic"]]) {
+      for (let page = 1; page <= maxPages; page += 1) {
+        const items = await this.fetchSoldPage(page, filter);
+        for (const item of items)
+          kinds.set(`hemmings-${item.id}`, kind);
+        if (items.length < SOLD_PER_PAGE)
+          break;
+      }
+    }
+
+    return kinds;
+  }
+
+  async updateSoldArchive({ maxPages = SOLD_MAX_PAGES, stopWhenKnown = true } = {}) {
     const archive = loadSoldArchive(this.soldFile());
     let added = 0;
 
-    for (let page = 1; page <= SOLD_MAX_PAGES; page += 1) {
+    for (let page = 1; page <= maxPages; page += 1) {
       const items = await this.fetchSoldPage(page);
       let newOnPage = 0;
 
@@ -258,11 +284,23 @@ class HemmingsScraper {
 
       added += newOnPage;
 
-      if (items.length < SOLD_PER_PAGE || newOnPage === 0)
+      if (items.length < SOLD_PER_PAGE || (stopWhenKnown && newOnPage === 0))
         break;
     }
 
-    if (added > 0) {
+    // Коробка: новые лоты — по самым свежим страницам фильтров; при разовом добавлении истории — по всей глубине.
+    let marked = 0;
+    const kinds = await this.fetchTransmissionIds(stopWhenKnown ? 2 : maxPages);
+    for (const lot of Object.values(archive)) {
+      const kind = kinds.get(lot.id);
+      if (kind && lot.transmissionKind !== kind) {
+        lot.transmissionKind = kind;
+        lot.transmission = kind === "manual" ? "Механика" : "Автомат";
+        marked += 1;
+      }
+    }
+
+    if (added > 0 || marked > 0) {
       saveSoldArchive(this.soldFile(), archive);
       this.log(`BRONVERA Rare: добавил ${added} проданных лотов Hemmings в архив (всего ${Object.keys(archive).length})`);
     }

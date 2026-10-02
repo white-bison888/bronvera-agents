@@ -4,6 +4,7 @@ const { applyLiteBrowsing } = require("../providers/lite-browsing");
 const { meterBrowserContext } = require("../costs/ledger");
 const { guessMake, guessModel } = require("./title-parser");
 const { loadSoldArchive, readSoldArchiveCached, saveSoldArchive, yearFromTitle } = require("./sold-archive");
+const { transmissionKind } = require("./sold-fields");
 
 /*
  * BRONVERA Rare, Фаза 3 (01.10.2026): четвёртая площадка — Cars & Bids.
@@ -134,6 +135,7 @@ const toSoldLot = (item) => {
     estimateMax: null,
     mileage: parseMileage(item.mileage),
     transmission: TRANSMISSION_LABELS[item.transmission] || null,
+    transmissionKind: transmissionKind(TRANSMISSION_LABELS[item.transmission]),
     conditionFacts: [],
     photoUrl: photoUrlOf(item.main_photo),
   };

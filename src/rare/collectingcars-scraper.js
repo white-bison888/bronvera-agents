@@ -3,6 +3,8 @@ const path = require("path");
 const { guessMake, guessModel } = require("./title-parser");
 const { loadSoldArchive, readSoldArchiveCached, saveSoldArchive, yearFromTitle } = require("./sold-archive");
 const { FxRates, reconvertArchive } = require("./fx");
+const { parseMileageText, transmissionKind } = require("./sold-fields");
+const { describeTransmission } = require("./transmission");
 
 /*
  * BRONVERA Rare, Фаза 3 (01.10.2026): шестая площадка — Collecting Cars.
@@ -28,7 +30,7 @@ const CLOSING_SOON_MS = 48 * 3600 * 1000;
 const LIVE_PER_PAGE = 250;
 const LIVE_MAX_PAGES = 10;
 const SOLD_PER_PAGE = 250;
-const SOLD_MAX_PAGES = 8; // потолок на один заход: первый раз добираем историю (до 2000 лотов), дальше хватает одной страницы
+const SOLD_MAX_PAGES = 4; // потолок на один ежедневный заход (CC продаёт ~100 машин в день); разовое добавление истории — maxPages побольше, stopWhenKnown: false
 
 // Курс ЕЦБ/api.frankfurter.dev на 01.10.2026, см. costs/prices.js (eurUsd) — тот же источник, не обновляется сам.
 const FX_BY_CODE = {
@@ -75,7 +77,7 @@ const statusOf = (closesAt, now) => {
 };
 
 const LIVE_FIELDS = "slug,title,mainImageUrl,currencyCode,currentBid,dtStageEndsUTC,productMake,modelName";
-const SOLD_FIELDS = "slug,title,mainImageUrl,currencyCode,priceSold,isSoldPriceHidden,productMake,productYear,modelName,dtSoldUTC";
+const SOLD_FIELDS = "slug,title,mainImageUrl,currencyCode,priceSold,isSoldPriceHidden,productMake,productYear,modelName,dtSoldUTC,features";
 
 const toRareLot = (doc, now) => {
   const make = doc.productMake || guessMake(doc.title);
@@ -134,8 +136,10 @@ const toSoldLot = (doc) => {
     sold: true,
     estimateMin: null,
     estimateMax: null,
-    mileage: null,
-    transmission: null,
+    // В поле features карточки: mileage «64,500 Miles» или «25,660 Km», transmission «Manual»/«Automatic»; цвета в индексе нет.
+    mileage: parseMileageText(doc.features?.mileage),
+    transmission: describeTransmission(doc.features?.transmission),
+    transmissionKind: transmissionKind(doc.features?.transmission),
     conditionFacts: [],
     photoUrl: photoOf(doc.mainImageUrl),
   };
@@ -243,11 +247,11 @@ class CollectingCarsScraper {
    * хоть один лот, которого ещё нет в архиве, — полностью знакомая
    * страница значит, что дальше всё уже собрано.
    */
-  async updateSoldArchive() {
+  async updateSoldArchive({ maxPages = SOLD_MAX_PAGES, stopWhenKnown = true } = {}) {
     const archive = loadSoldArchive(this.soldFile());
     let added = 0;
 
-    for (let page = 1; page <= SOLD_MAX_PAGES; page += 1) {
+    for (let page = 1; page <= maxPages; page += 1) {
       const { docs } = await this.search({ stage: "sold", sortBy: "tsSoldUTC:desc", fields: SOLD_FIELDS, page, perPage: SOLD_PER_PAGE });
       let newOnPage = 0;
 
@@ -268,7 +272,7 @@ class CollectingCarsScraper {
 
       added += newOnPage;
 
-      if (docs.length < SOLD_PER_PAGE || newOnPage === 0)
+      if (docs.length < SOLD_PER_PAGE || (stopWhenKnown && newOnPage === 0))
         break;
     }
 
