@@ -8,7 +8,7 @@ const DAY_MS = 86400000;
 const atMinskNoon = daysAgo => new Date(Date.UTC(2026, 9, 1, 9, 0, 0) - daysAgo * DAY_MS).toISOString();
 const NOW = Date.parse(atMinskNoon(0));
 
-const SOURCE_IDS = ["bat", "pcarmarket", "rm-sothebys", "cars-and-bids", "hemmings"];
+const SOURCE_IDS = ["bat", "pcarmarket", "rm-sothebys", "cars-and-bids", "hemmings", "collecting-cars"];
 
 const entry = (overrides = {}) => ({
   kind: "proxy",
@@ -43,13 +43,15 @@ test("entries are attributed to the right source by their ledger label", () => {
   const entries = [
     entry({ source: "выдача PCARMARKET", costUsd: 0.001 }),
     entry({ source: "выдача Cars & Bids", costUsd: 0.004 }),
+    entry({ source: "выдача Collecting Cars", costUsd: 0.002 }),
   ];
 
   const summary = buildRareCostSummary({ sourceIds: SOURCE_IDS, entries, now: NOW });
 
   assert.equal(summary.today.bySource.find(s => s.id === "pcarmarket").costUsd, 0.001);
   assert.equal(summary.today.bySource.find(s => s.id === "cars-and-bids").costUsd, 0.004);
-  assert.equal(summary.today.totalUsd, 0.005);
+  assert.equal(summary.today.bySource.find(s => s.id === "collecting-cars").costUsd, 0.002);
+  assert.equal(summary.today.totalUsd, 0.007);
 });
 
 test("entries from unrelated ledger sources (bid-watcher, screener) are ignored", () => {

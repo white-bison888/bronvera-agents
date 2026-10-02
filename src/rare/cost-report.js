@@ -4,10 +4,14 @@ const { minskDay } = require("../costs/report");
 /*
  * Сводка расходов BRONVERA Rare — отдельно от src/costs/report.js
  * (тот завязан на прогоны Dify, здесь их нет совсем). Платит только
- * резидентный прокси для площадок за Cloudflare (PCARMARKET,
- * Cars & Bids) — записи уже пишет costLedger.meterBrowserContext при
+ * резидентный прокси для площадок за Cloudflare (PCARMARKET, Cars & Bids,
+ * Collecting Cars) — записи уже пишет costLedger.meterBrowserContext при
  * каждом прогоне их скраперов. Остальные источники (BaT, RM Sotheby's,
  * Hemmings) прокси не используют — честный $0, а не отсутствие строки.
+ *
+ * Источник, подключённый через прокси, но не добавленный сюда, молча
+ * показал бы честный $0 вместо настоящего расхода — проверено на
+ * Collecting Cars 02.10.2026 (забыли добавить при подключении).
  */
 
 const round = value => Math.round(value * 1e6) / 1e6;
@@ -16,6 +20,7 @@ const round = value => Math.round(value * 1e6) / 1e6;
 const SOURCE_BY_LEDGER_LABEL = {
   "выдача PCARMARKET": "pcarmarket",
   "выдача Cars & Bids": "cars-and-bids",
+  "выдача Collecting Cars": "collecting-cars",
 };
 
 const lastNDays = (count, now) => {
