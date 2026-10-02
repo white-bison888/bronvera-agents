@@ -132,3 +132,12 @@ test("a one-year difference between the VIN model year and the lot year is norma
   applyDecoded(lot, porsche);
   assert.equal(lot.vinCheck, undefined);
 });
+
+test("a 30-year gap is the VIN year code repeating (1993 vs 2023), not a real discrepancy", () => {
+  const lot = { make: "Bugatti", year: 1993 };
+  applyDecoded(lot, { Make: "BUGATTI", Model: "EB110", ModelYear: "2023", ErrorCode: "0" });
+  assert.equal(lot.vinCheck, undefined);
+  const real = { make: "Bugatti", year: 2014 };
+  applyDecoded(real, { Make: "BUGATTI", Model: "Veyron", ModelYear: "2004", ErrorCode: "0" });
+  assert.deepEqual(real.vinCheck, [{ field: "year", lot: 2014, vin: 2004 }]);
+});
