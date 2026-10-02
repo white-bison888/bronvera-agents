@@ -108,12 +108,14 @@ const engineOf = (...texts) => {
   else if (cc && Number(cc[1]) >= 500 && Number(cc[1]) <= 9000)
     displacement = Math.round(Number(cc[1]) / 100) / 10;
 
+  // «Turbo-Look» — внешний пакет (кузов как у Turbo), мотор при этом атмосферный: на наддув не указывает.
+  const forAspiration = text.replace(/turbo[- ]?look/gi, " ");
   let aspiration = null;
-  if (/\b(twin[- ]turbo|bi[- ]?turbo|turbocharged|turbo)\b/i.test(text) && /\b(supercharged|supercharger|blower)\b/i.test(text))
+  if (/\b(twin[- ]turbo|bi[- ]?turbo|turbocharged|turbo)\b/i.test(forAspiration) && /\b(supercharged|supercharger|blower)\b/i.test(forAspiration))
     aspiration = "Турбо + компрессор";
-  else if (/\b(twin[- ]turbo|bi[- ]?turbo|turbocharged|turbo(?:diesel)?|turbos)\b/i.test(text))
+  else if (/\b(twin[- ]turbo|bi[- ]?turbo|turbocharged|turbo(?:diesel)?|turbos)\b/i.test(forAspiration))
     aspiration = "Турбо";
-  else if (/\b(supercharged|supercharger|blower|kompressor)\b/i.test(text))
+  else if (/\b(supercharged|supercharger|blower|kompressor)\b/i.test(forAspiration))
     aspiration = "Компрессор";
 
   return { cylinders, engineLayout, displacement, aspiration };
@@ -169,7 +171,7 @@ const engineLabel = ({ cylinders, engineLayout }) => {
     return null;
   if (engineLayout === "V" || engineLayout === "W")
     return `${engineLayout}${cylinders}`;
-  return `${engineLayout ?? "Рядный"} ${cylinders}`;
+  return engineLayout ? `${engineLayout} ${cylinders}` : `${cylinders} цил.`; // расположение неизвестно — не выдумываем «рядный»
 };
 
 /* Дописать лоту из архива то, чего у него ещё нет, из заголовка (и описания, если есть) — уже известное не трогаем. */

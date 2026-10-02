@@ -32,6 +32,7 @@ test("engineLabel makes a short filter label", () => {
   assert.equal(engineLabel({ cylinders: 4, engineLayout: "Рядный" }), "Рядный 4");
   assert.equal(engineLabel({ cylinders: null, engineLayout: "Роторный" }), "Роторный");
   assert.equal(engineLabel({ cylinders: null, engineLayout: null }), null);
+  assert.equal(engineLabel({ cylinders: 6, engineLayout: null }), "6 цил."); // расположение неизвестно — не «рядный»
 });
 
 test("drivetrainOf and steeringOf only report what the text states", () => {
@@ -87,4 +88,11 @@ test("engineOf understands Collecting Cars powertrain strings: «5.5L 8V», «3.
   assert.equal(engineOf("0.6L H2").engineLayout, "Оппозитный");
   assert.equal(engineOf("0.6L H2").cylinders, 2);
   assert.equal(engineOf("Dual Electric Motor").cylinders, null);
+});
+
+test("«Turbo-Look» is a body package, not a turbocharged engine", () => {
+  assert.equal(engineOf("1989 Porsche 911 Carrera 3.2 Targa 'Turbo-Look'").aspiration, null);
+  assert.equal(engineOf("1986 Porsche 911 Carrera 3.2 Turbo Look").aspiration, null);
+  assert.equal(engineOf("1989 Porsche 911 Turbo").aspiration, "Турбо");
+  assert.equal(engineOf("Turbo-Look body with a turbocharged 3.3-liter flat-six").aspiration, "Турбо");
 });
