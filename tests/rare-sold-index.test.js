@@ -147,32 +147,6 @@ test("points() carries the model line as «model» and the rest of the name as �
   assert.equal(byId["911 Carrera-0"][11], -1); // кузов не известен
 });
 
-test("comparables() narrows by trim, body, gearbox, engine, years and mileage, then relaxes from the end when there are too few", () => {
-  const dir = tmpDir();
-  const car = (id, o = {}) => lot(id, { model: "911 Turbo", year: 1996, bodyStyle: "Купе", transmissionKind: "manual", cylinders: 6, engineLayout: "Оппозитный", mileage: 30000, salePrice: 100000, ...o });
-  const filler = Array.from({ length: 10 }, (_, i) => lot(`c${i}`, { model: "911 Carrera", year: 1996 }));
-  const turbo = Array.from({ length: 4 }, (_, i) => car(`t${i}`, { salePrice: 100000 + i * 10000 }));
-  const index = new SoldIndex([fakeScraper(dir, "a", [car("me", { salePrice: 125000 }), ...turbo, car("cab", { bodyStyle: "Кабриолет" }), car("auto", { transmissionKind: "automatic" }), car("far", { year: 2008 }), car("unsold", { sold: false }), ...filler, lot("other-make", { make: "Ferrari", model: "911 Turbo" })])]);
-
-  const strict = index.comparables("me", { minCount: 3 });
-  assert.equal(strict.line, "Porsche 911");
-  assert.ok(strict.criteria.includes("Turbo") && strict.criteria.includes("Купе") && strict.criteria.includes("механика"));
-  assert.deepEqual(strict.relaxed, []);
-  assert.equal(strict.count, 4); // t0..t3: без кабриолета, автомата, далёкого года, непроданного, чужой марки
-  assert.equal(strict.median, 110000);
-  assert.equal(strict.lots.length, 4);
-  assert.ok(strict.lots.every(l => l.id !== "me"));
-
-  const relaxed = index.comparables("me", { minCount: 6 });
-  assert.ok(relaxed.relaxed.length > 0); // мало равных — сняли самые слабые признаки и сказали об этом
-  assert.ok(relaxed.criteria.includes("Turbo")); // комплектацию не снимаем никогда
-  assert.ok(relaxed.relaxed.includes("близкий пробег") || relaxed.relaxed.some(label => /гг\./.test(label)));
-  assert.equal(relaxed.thin, relaxed.count < 6);
-  assert.ok(relaxed.lots.every(l => /Turbo/.test(String(l.model))) || relaxed.count === 0);
-
-  assert.equal(index.comparables("nope"), null);
-});
-
 test("the same car sold more than once is grouped by VIN (or chassis number + make) and its history is returned oldest first", () => {
   const dir = tmpDir();
   const index = new SoldIndex([fakeScraper(dir, "a", [
@@ -200,42 +174,6 @@ test("the same car sold more than once is grouped by VIN (or chassis number + ma
   assert.equal(byId.other[16], -1);
 });
 
-test("comparables() never mixes modified or special-version cars with ordinary ones, and reports a thin sample instead of loosening that", () => {
-  const dir = tmpDir();
-  const car = (id, o = {}) => lot(id, { model: "911 Carrera 3.2", year: 1989, bodyStyle: "Тарга", mileage: 60000, salePrice: 50000, ...o });
-  const index = new SoldIndex([fakeScraper(dir, "a", [
-    car("me", { flags: ["special", "oneOwner"], mileage: 7944, salePrice: 357000 }),
-    ...Array.from({ length: 12 }, (_, i) => car(`plain${i}`)),
-    car("other-special", { flags: ["special"], salePrice: 300000 }),
-    ...Array.from({ length: 5 }, (_, i) => car(`mod${i}`, { flags: ["modified"], salePrice: 90000 })),
-  ])]);
-
-  const comps = index.comparables("me", { minCount: 8 });
-  assert.ok(comps.criteria.includes("особая версия"));
-  assert.deepEqual(comps.lots.map(l => l.id), ["other-special"]); // обычные Carrera в сравнение не попали
-  assert.equal(comps.thin, true);
-  assert.equal(comps.median, 300000);
-
-  // у «двойников» нет вовсе — сравниваем с другими особыми версиями той же линейки (без комплектации)
-  const lone = new SoldIndex([fakeScraper(tmpDir(), "b", [
-    car("me2", { model: "911 Carrera 3.2", flags: ["special"], salePrice: 357000 }),
-    car("sib", { model: "911 Turbo", flags: ["special"], salePrice: 220000 }),
-    car("sib2", { model: "911 GT3", flags: ["special"], salePrice: 260000 }),
-    ...Array.from({ length: 6 }, (_, i) => car(`plainT${i}`, { model: "911 Turbo" })),
-    ...Array.from({ length: 6 }, (_, i) => car(`plainG${i}`, { model: "911 GT3" })),
-    ...Array.from({ length: 6 }, (_, i) => car(`plain${i}`, { model: "911 Carrera 3.2" })),
-  ])]).comparables("me2", { minCount: 8 });
-  assert.deepEqual(lone.lots.map(l => l.id).sort(), ["sib", "sib2"]);
-  assert.ok(lone.relaxed.includes("Carrera 3.2"));
-  assert.ok(lone.criteria.includes("особая версия"));
-  assert.equal(lone.thin, true);
-
-  const ordinary = index.comparables("plain0", { minCount: 8 });
-  assert.ok(ordinary.criteria.includes("обычная версия"));
-  assert.ok(ordinary.criteria.includes("серийные"));
-  assert.ok(ordinary.lots.every(l => !(l.flags || []).length));
-});
-
 test("points() flags column packs modified/project/original/restored/one-owner/special and a computed low mileage", () => {
   const dir = tmpDir();
   const index = new SoldIndex([fakeScraper(dir, "a", [
@@ -245,4 +183,89 @@ test("points() flags column packs modified/project/original/restored/one-owner/s
   const byId = Object.fromEntries(index.points().rows.map(r => [r[0], r]));
   assert.equal(byId.f1[17], 1 + 32 + 64);
   assert.equal(byId.f2[17], 0);
+});
+
+const car = (id, o = {}) => lot(id, { model: "911 Carrera 3.2", year: 1989, bodyStyle: "Тарга", transmissionKind: "manual", cylinders: 6, engineLayout: "Оппозитный", mileage: 60000, salePrice: 50000, ...o });
+const ids = list => list.map(l => l.id);
+
+test("comparables() shows only the same cars when there are enough of them, and says nothing about differences", () => {
+  const index = new SoldIndex([fakeScraper(tmpDir(), "a", [
+    car("me", { salePrice: 60000 }),
+    ...Array.from({ length: 6 }, (_, i) => car(`same${i}`, { year: 1988 + (i % 3), salePrice: 50000 + i * 1000 })),
+    car("cab", { bodyStyle: "Кабриолет" }),
+    car("auto", { transmissionKind: "automatic" }),
+    car("old", { year: 1975 }),
+    car("unsold", { sold: false }),
+    lot("ferrari", { make: "Ferrari", model: "911 Carrera 3.2" }),
+  ])]);
+
+  const comps = index.comparables("me");
+  assert.equal(comps.basis, "exact");
+  assert.equal(comps.exactCount, 6);
+  assert.deepEqual(ids(comps.lots).sort(), ["same0", "same1", "same2", "same3", "same4", "same5"]);
+  assert.ok(comps.lots.every(l => l.similarity === "exact" && l.differs.length === 0));
+  assert.equal(comps.thin, false);
+  assert.equal(comps.median, 52000);
+});
+
+test("comparables() adds the nearest cars by class and age when there are few identical ones, and labels how each differs", () => {
+  const index = new SoldIndex([fakeScraper(tmpDir(), "a", [
+    car("me", { year: 2014, model: "911 Carrera 3.2", generation: "991.1" }),
+    car("twin", { year: 2014, generation: "991.1", salePrice: 90000 }),
+    car("gen992", { year: 2020, generation: "992", salePrice: 150000 }),
+    car("near-year", { year: 2016, generation: "991.1", transmissionKind: "automatic", salePrice: 95000 }),
+    car("far", { year: 1990, generation: "964", salePrice: 40000 }),
+    ...Array.from({ length: 4 }, (_, i) => car(`other${i}`, { year: 2012 + i, generation: "991.1", bodyStyle: "Купе", salePrice: 70000 + i })),
+  ])]);
+
+  const comps = index.comparables("me");
+  assert.equal(comps.basis, "nearest");
+  assert.equal(comps.exactCount, 1);
+  assert.equal(comps.lots[0].id, "twin");
+  assert.equal(comps.lots[0].similarity, "exact");
+  assert.equal(comps.thin, true);
+
+  const byId = Object.fromEntries(comps.lots.map(l => [l.id, l]));
+  assert.equal(byId["near-year"].similarity, "near");
+  assert.ok(byId["near-year"].differs.includes("автомат"));
+  assert.ok(byId.gen992.differs.includes("поколение 992"));
+  assert.ok(byId.other0.differs.includes("кузов: Купе"));
+  // ближайшие идут раньше далёких: машина 1990 года и другого поколения — в самом конце
+  const order = ids(comps.lots);
+  assert.ok(order.indexOf("near-year") < order.indexOf("far") || !order.includes("far"));
+});
+
+test("comparables() never mixes modified or special-version cars with ordinary ones", () => {
+  const index = new SoldIndex([fakeScraper(tmpDir(), "a", [
+    car("me", { flags: ["special", "oneOwner"], mileage: 7944, salePrice: 357000 }),
+    ...Array.from({ length: 12 }, (_, i) => car(`plain${i}`)),
+    car("other-special", { flags: ["special"], salePrice: 300000 }),
+    ...Array.from({ length: 5 }, (_, i) => car(`mod${i}`, { flags: ["modified"], salePrice: 90000 })),
+  ])]);
+
+  const comps = index.comparables("me");
+  assert.deepEqual(ids(comps.lots), ["other-special"]);
+  assert.equal(comps.thin, true);
+  assert.equal(comps.median, 300000);
+
+  const ordinary = index.comparables("plain0");
+  assert.ok(ordinary.criteria.includes("серийные"));
+  assert.ok(ordinary.lots.every(l => !(l.flags || []).length));
+});
+
+test("comparables() treats '50th Anniversary Edition' and '50th Anniversary Edition - Manual' as the same trim", () => {
+  const index = new SoldIndex([fakeScraper(tmpDir(), "a", [
+    car("me", { model: "911 50th Anniversary Edition", trimName: "50th Anniversary Edition", generation: "991.1", year: 2014 }),
+    ...Array.from({ length: 5 }, (_, i) => car(`ann${i}`, { model: "911 50th Anniversary Edition", trimName: "50th Anniversary Edition - Manual", generation: "991.1", year: 2013 + (i % 2) })),
+  ])]);
+  const comps = index.comparables("me");
+  assert.equal(comps.exactCount, 5);
+});
+
+test("comparables() returns nothing to compare when the car has no model line", () => {
+  const index = new SoldIndex([fakeScraper(tmpDir(), "a", [lot("x", { model: null })])]);
+  const comps = index.comparables("x");
+  assert.equal(comps.line, null);
+  assert.deepEqual(comps.lots, []);
+  assert.equal(index.comparables("nope"), null);
 });

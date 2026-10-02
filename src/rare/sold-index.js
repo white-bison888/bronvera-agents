@@ -62,6 +62,21 @@ const resaleKeyOf = (lot) => {
  * Особенности лота битами (см. FLAG_RULES в sold-attrs.js): 1 доработана, 2 проект, 4 оригинал,
  * 8 реставрирована, 16 один владелец, 32 особая версия, 64 малый пробег (считается по пробегу и возрасту).
  */
+/* Комплектации совпадают, если одна содержится в другой («50th Anniversary Edition» и «50th Anniversary Edition - Manual») или почти целиком пересекаются по словам. */
+const normalizeTrim = text => String(text || "").toLowerCase().replace(/[^a-z0-9а-я.]+/g, " ").trim();
+const sameTrim = (a, b) => {
+  const x = normalizeTrim(a);
+  const y = normalizeTrim(b);
+  if (!x || !y)
+    return false;
+  if (x === y || x.includes(y) || y.includes(x))
+    return true;
+  const wx = new Set(x.split(" "));
+  const wy = new Set(y.split(" "));
+  const shared = [...wx].filter(word => wy.has(word)).length;
+  return shared / Math.max(wx.size, wy.size) >= 0.6;
+};
+
 const FLAG_BITS = { modified: 1, project: 2, unrestored: 4, restored: 8, oneOwner: 16, special: 32 };
 const LOW_MILEAGE_BIT = 64;
 
@@ -207,14 +222,11 @@ class SoldIndex {
   }
 
   /*
-   * «Равные позиции» (просьба Mikita): с чем честно сравнивать цену этого
-   * лота. Берём продажи той же линейки модели и сужаем по признакам от
-   * важных к менее важным: комплектация, кузов, коробка, двигатель, годы
-   * выпуска ±3, пробег. Если подходящих меньше minCount, признаки снимаем
-   * по одному с конца списка (первым — пробег, потом годы…) и честно
-   * говорим, какие сняли. Возвращает критерии, статистику и самые свежие продажи.
+   * «Равные позиции» (просьба Mikita): с чем честно сравнивать цену этого лота. Берём продажи той же
+   * линейки модели, доработанные с доработанными, особые версии с особыми, и ранжируем по близости
+   * (см. compare). Сначала «такие же», если их мало — ближайшие по классу и возрасту с пометкой, чем отличаются.
    */
-  comparables(id, { minCount = 8, listSize = 12 } = {}) {
+  comparables(id, { minExact = 5, listSize = 12 } = {}) {
     this.refresh();
     const lot = this.byId.get(id);
     if (!lot)
@@ -222,81 +234,138 @@ class SoldIndex {
 
     const resolved = this.resolveFamily(lot);
     const mine = { ...resolved, trim: lot.trimName || resolved.trim, generation: lot.generation || resolved.generation };
+    const trimOf = other => other.trimName || this.resolveFamily(other).trim;
     const generationOf = other => other.generation || this.resolveFamily(other).generation;
-    const sameLine = other => other.id !== lot.id && other.make === lot.make && other.sold !== false && this.resolveFamily(other).family === mine.family;
-    const pool = mine.family ? this.lots.filter(sameLine) : [];
-
-    const mileageBand = (miles) => {
-      for (const limit of [5000, 10000, 25000, 50000, 75000, 100000, 150000]) {
-        if (miles < limit)
-          return limit;
-      }
-      return Infinity;
-    };
-
-    // Критерии от самых важных к менее важным; у каждого — подпись и проверка. Критерий без данных у самого лота пропускаем.
     const myFlags = new Set(lot.flags || []);
     const myCondition = conditionOf(lot);
-    const criteria = [
-      { key: "generation", label: mine.generation ? `поколение ${mine.generation}` : null, use: Boolean(mine.generation), test: o => generationOf(o) === mine.generation },
-      // Доработанная и особая версия — другая позиция: «Turbo-Look» с заводской краской по спецзаказу нельзя мерить обычными Carrera.
-      { key: "modified", label: myFlags.has("modified") ? "доработанные" : "серийные", use: true, test: o => (o.flags || []).includes("modified") === myFlags.has("modified") },
-      { key: "special", label: myFlags.has("special") ? "особая версия" : "обычная версия", use: true, test: o => (o.flags || []).includes("special") === myFlags.has("special") },
-      { key: "trim", label: mine.trim, use: Boolean(mine.trim), test: o => (o.trimName || this.resolveFamily(o).trim) === mine.trim },
-      { key: "condition", label: myCondition ? CONDITION_LABELS[myCondition] : null, use: Boolean(myCondition), test: o => conditionOf(o) === myCondition },
-      { key: "body", label: lot.bodyStyle, use: Boolean(lot.bodyStyle), test: o => o.bodyStyle === lot.bodyStyle },
-      { key: "transmission", label: lot.transmissionKind === "manual" ? "механика" : "автомат", use: Boolean(lot.transmissionKind), test: o => o.transmissionKind === lot.transmissionKind },
-      { key: "engine", label: engineLabel(lot), use: Boolean(engineLabel(lot)), test: o => engineLabel(o) === engineLabel(lot) },
-      { key: "years", label: typeof lot.year === "number" ? `${lot.year - 3}–${lot.year + 3} гг.` : null, use: typeof lot.year === "number", test: o => typeof o.year === "number" && Math.abs(o.year - lot.year) <= 3 },
-      { key: "mileage", label: typeof lot.mileage === "number" ? "близкий пробег" : null, use: typeof lot.mileage === "number", test: o => typeof o.mileage === "number" && mileageBand(o.mileage) === mileageBand(lot.mileage) },
-      { key: "lowMileage", label: isLowMileage(lot) ? "малый пробег" : null, use: isLowMileage(lot), test: o => isLowMileage(o) },
-      { key: "oneOwner", label: myFlags.has("oneOwner") ? "один владелец" : null, use: myFlags.has("oneOwner"), test: o => (o.flags || []).includes("oneOwner") },
-    ].filter(item => item.use);
+
+    // Та же марка и линейка; доработанная и особая версия — другая позиция, их не смешиваем никогда.
+    const hasFlag = (other, code) => (other.flags || []).includes(code);
+    const pool = mine.family
+      ? this.lots.filter(other => other.id !== lot.id && other.make === lot.make && other.sold !== false
+        && this.resolveFamily(other).family === mine.family
+        && hasFlag(other, "modified") === myFlags.has("modified")
+        && hasFlag(other, "special") === myFlags.has("special"))
+      : [];
+
+    const mileageBand = (miles) => {
+      for (const [index, limit] of [5000, 10000, 25000, 50000, 75000, 100000, 150000].entries()) {
+        if (miles < limit)
+          return index;
+      }
+      return 7;
+    };
 
     /*
-     * Поколение и комплектация — ядро позиции: без них это уже другая машина
-     * (997 Turbo и 996 Carrera — разные цены), поэтому их не снимаем никогда,
-     * даже если совпадений мало. Остальные признаки снимаем по одному с конца
-     * (пробег, годы, двигатель, коробка, кузов), пока не наберётся minCount.
+     * «Такие же» и «ближайшие» (просьба Mikita 02.10): сначала машины, совпадающие по поколению,
+     * комплектации, кузову, коробке, двигателю и близкие по году (до двух лет). Если их мало — к ним
+     * добавляем ближайшие по классу и возрасту, и у каждой пишем, чем она отличается. Неизвестный
+     * признак «такой же» не ломает — только слегка отодвигает машину в списке.
      */
-    const CORE = new Set(["generation", "trim", "modified", "special"]);
-    // Статус (доработана / особая версия) не снимаем никогда; комплектацию и поколение — только если без этого сравнивать вообще не с чем.
-    const status = criteria.filter(item => item.key === "modified" || item.key === "special");
-    const identity = criteria.filter(item => item.key === "generation" || item.key === "trim");
-    const core = criteria.filter(item => CORE.has(item.key));
-    const soft = criteria.filter(item => !CORE.has(item.key));
-    let activeSoft = soft;
-    const matchFor = list => pool.filter(other => [...core, ...list].every(item => item.test(other)));
-    let matches = matchFor(activeSoft);
-    const dropped = [];
-    while (matches.length < minCount && activeSoft.length > 0) {
-      dropped.push(activeSoft[activeSoft.length - 1]);
-      activeSoft = activeSoft.slice(0, -1);
-      matches = matchFor(activeSoft);
-    }
-    let activeCore = core;
-    // Совсем нет подходящих (редкая версия, у которой нет «двойников») — ориентир: та же линейка и тот же статус, без комплектации и поколения.
-    if (matches.length === 0 && identity.length > 0) {
-      for (const item of [...identity].reverse())
-        dropped.push(item);
-      activeCore = status;
-      matches = pool.filter(other => status.every(item => item.test(other)));
-    }
-    const active = [...activeCore, ...activeSoft];
+    const compare = (other) => {
+      const differs = [];
+      let distance = 0;
+      let exact = true;
 
-    const prices = matches.map(other => other.salePrice).sort((a, b) => a - b);
+      const myGeneration = mine.generation;
+      const theirGeneration = generationOf(other);
+      if (myGeneration && theirGeneration && !sameTrim(myGeneration, theirGeneration)) {
+        distance += 25;
+        exact = false;
+        differs.push(`поколение ${theirGeneration}`);
+      }
+      else if (myGeneration && !theirGeneration) {
+        distance += 6;
+      }
+
+      const theirTrim = trimOf(other);
+      if (mine.trim && theirTrim && !sameTrim(mine.trim, theirTrim)) {
+        distance += 12;
+        exact = false;
+        differs.push(`комплектация: ${theirTrim}`);
+      }
+      else if (mine.trim && !theirTrim) {
+        distance += 4;
+      }
+
+      if (myCondition && conditionOf(other) !== myCondition) {
+        distance += 8;
+        exact = false;
+        differs.push(conditionOf(other) ? CONDITION_LABELS[conditionOf(other)] : "состояние не указано");
+      }
+      if (lot.bodyStyle && other.bodyStyle && lot.bodyStyle !== other.bodyStyle) {
+        distance += 6;
+        exact = false;
+        differs.push(`кузов: ${other.bodyStyle}`);
+      }
+      if (lot.transmissionKind && other.transmissionKind && lot.transmissionKind !== other.transmissionKind) {
+        distance += 5;
+        exact = false;
+        differs.push(other.transmissionKind === "manual" ? "механика" : "автомат");
+      }
+      if (engineLabel(lot) && engineLabel(other) && engineLabel(lot) !== engineLabel(other)) {
+        distance += 4;
+        exact = false;
+        differs.push(`двигатель: ${engineLabel(other)}`);
+      }
+      if (typeof lot.year === "number" && typeof other.year === "number") {
+        const gap = Math.abs(lot.year - other.year);
+        distance += gap * 1.5;
+        if (gap > 2) {
+          exact = false;
+          differs.push(`${other.year} г.`);
+        }
+      }
+      if (typeof lot.mileage === "number" && typeof other.mileage === "number") {
+        const gap = Math.abs(mileageBand(lot.mileage) - mileageBand(other.mileage));
+        distance += gap;
+        if (gap >= 2)
+          differs.push(`пробег ${Math.round(other.mileage / 1000)} тыс. миль`);
+      }
+      if (isLowMileage(lot) !== isLowMileage(other))
+        distance += 3;
+      if (myFlags.has("oneOwner") !== hasFlag(other, "oneOwner"))
+        distance += 1;
+
+      return { other, distance, exact, differs };
+    };
+
+    const byClosest = (x, y) => x.distance - y.distance || Date.parse(y.other.soldAt) - Date.parse(x.other.soldAt);
+    const ranked = pool.map(compare).sort(byClosest);
+    const exactList = ranked.filter(item => item.exact);
+    const nearList = ranked.filter(item => !item.exact);
+
+    // Достаточно «таких же» — показываем только их; мало — добавляем ближайшие, пока в списке не станет хотя бы 10.
+    const shown = exactList.length >= minExact
+      ? exactList.slice(0, listSize)
+      : [...exactList, ...nearList.slice(0, Math.max(0, Math.min(listSize, 10) - exactList.length))];
+    const basis = exactList.length >= minExact ? "exact" : "nearest";
+    const statsOver = basis === "exact" ? exactList : shown;
+
+    const prices = statsOver.map(item => item.other.salePrice).sort((x, y) => x - y);
     const at = q => (prices.length ? prices[Math.min(prices.length - 1, Math.floor((prices.length - 1) * q))] : null);
+
+    const criteria = [
+      mine.generation ? `поколение ${mine.generation}` : null,
+      mine.trim,
+      myFlags.has("modified") ? "доработанные" : "серийные",
+      myFlags.has("special") ? "особая версия" : "обычная версия",
+      lot.bodyStyle,
+      lot.transmissionKind ? (lot.transmissionKind === "manual" ? "механика" : "автомат") : null,
+      typeof lot.year === "number" ? `${lot.year - 2}–${lot.year + 2} гг.` : null,
+    ].filter(Boolean);
 
     return {
       line: mine.family ? `${lot.make} ${mine.family}` : null,
-      criteria: active.map(item => item.label),
-      relaxed: dropped.map(item => item.label),
-      count: matches.length,
-      thin: matches.length < minCount,
+      criteria,
+      basis,
+      exactCount: exactList.length,
+      count: statsOver.length,
+      thin: exactList.length < 3,
       median: at(0.5),
       low: at(0.25),
       high: at(0.75),
-      lots: matches.slice(0, listSize).map(fullLot),
+      lots: shown.map(item => ({ ...fullLot(item.other), similarity: item.exact ? "exact" : "near", differs: item.differs })),
     };
   }
 
