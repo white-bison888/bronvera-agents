@@ -59,6 +59,37 @@ const resaleKeyOf = (lot) => {
 };
 
 /*
+ * Насколько надёжно известно, что это за машина и встречалась ли она на других площадках.
+ * Уровень зависит только от идентификатора (VIN или номер шасси), результата его расшифровки и числа записей об этой машине;
+ * ничего не угадывается по пробегу или цвету.
+ *   multi — тот же VIN/шасси найден на двух и более площадках; repeat — продавалась несколько раз на одной;
+ *   decoded — VIN есть и расшифрован, других записей нет; undecoded — VIN есть, расшифровка ничего не дала;
+ *   chassis — только номер шасси (ищем среди лотов той же марки); weak — номер слишком короткий для поиска; none — идентификатора нет;
+ *   conflict — VIN называет другую марку; inconsistent — под одним номером оказались разные марки или годы.
+ */
+const identityOf = (lot, group = []) => {
+  const peers = group.length ? group : [lot];
+  const via = lot.vin ? "vin" : (resaleKeyOf(lot) ? "chassis" : null);
+  const sources = [...new Set(peers.map(peer => peer.source).filter(Boolean))];
+  const checks = Array.isArray(lot.vinCheck) ? lot.vinCheck.length : 0;
+  const base = { via, sales: peers.length, sources, checks };
+  if (lot.vinMismatch)
+    return { ...base, level: "conflict" };
+  if (!via)
+    return { ...base, level: lot.chassis ? "weak" : "none" };
+  if (peers.length >= 2) {
+    const makes = new Set(peers.map(peer => String(peer.make || "").toLowerCase()).filter(Boolean));
+    const years = peers.map(peer => peer.year).filter(year => typeof year === "number");
+    if (makes.size > 1 || (years.length > 1 && Math.max(...years) - Math.min(...years) > 2))
+      return { ...base, level: "inconsistent" };
+    return { ...base, level: sources.length >= 2 ? "multi" : "repeat" };
+  }
+  if (via === "chassis")
+    return { ...base, level: "chassis" };
+  return { ...base, level: lot.vinDecoded ? "decoded" : "undecoded" };
+};
+
+/*
  * Особенности лота битами (см. FLAG_RULES в sold-attrs.js): 1 доработана, 2 проект, 4 оригинал,
  * 8 реставрирована, 16 один владелец, 32 особая версия, 64 малый пробег (считается по пробегу и возрасту).
  */
@@ -399,6 +430,16 @@ class SoldIndex {
     return this.resaleGroups[index].map(fullLot);
   }
 
+  /* Уровень уверенности в личности машины для страницы лота (см. identityOf). */
+  identity(id) {
+    this.refresh();
+    const lot = this.byId.get(id);
+    if (!lot)
+      return null;
+    const index = this.resaleOf.get(id);
+    return identityOf(lot, index === undefined ? [] : this.resaleGroups[index]);
+  }
+
   lot(id) {
     this.refresh();
     const lot = this.byId.get(id);
@@ -406,4 +447,4 @@ class SoldIndex {
   }
 }
 
-module.exports = { SoldIndex, fullLot, POINT_FIELDS };
+module.exports = { SoldIndex, fullLot, identityOf, POINT_FIELDS };

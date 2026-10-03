@@ -1083,7 +1083,8 @@ app.get("/api/rare/sold/comps", (req, res) => {
 
 /* Перепродажи: все продажи той же машины (по VIN / номеру шасси) для страницы лота. */
 app.get("/api/rare/sold/history", (req, res) => {
-  res.json({ success: true, lots: soldIndex.history(String(req.query.id || "")) });
+  const id = String(req.query.id || "");
+  res.json({ success: true, lots: soldIndex.history(id), identity: soldIndex.identity(id) });
 });
 
 const SOLD_LOTS_MAX_IDS = 500;

@@ -291,3 +291,37 @@ test("flags are derived from the title for lots whose archive has not computed t
   assert.equal(byId.late[17] & 1, 1);
   assert.equal(byId.stored[17] & 1, 0); // уже посчитанное архивом не пересчитываем
 });
+
+test("identity level says how sure we are which car this is, from identifiers only", () => {
+  const dir = tmpDir();
+  const V = "WP0CD2A94RS257786";
+  const index = new SoldIndex([fakeScraper(dir, "a", [
+    lot("multi1", { vin: V, vinDecoded: true, soldAt: "2022-03-01T00:00:00.000Z" }),
+    lot("multi2", { vin: V, vinDecoded: true, soldAt: "2025-05-01T00:00:00.000Z", source: "RM Sotheby's" }),
+    lot("rep1", { vin: "WP0CD2A94RS111111", soldAt: "2022-03-01T00:00:00.000Z" }),
+    lot("rep2", { vin: "WP0CD2A94RS111111", soldAt: "2023-03-01T00:00:00.000Z" }),
+    lot("dec", { vin: "WP0CD2A94RS222222", vinDecoded: true, vinCheck: [{ field: "displacement", lot: 3.2, vin: 3.6 }] }),
+    lot("undec", { vin: "WP0CD2A94RS333333" }),
+    lot("ch", { chassis: "164877D153201", make: "Chevrolet" }),
+    lot("weak", { chassis: "A1" }),
+    lot("none", {}),
+    lot("conf", { vin: "WP0CD2A94RS444444", vinDecoded: true, vinMismatch: "Audi" }),
+    lot("bad1", { vin: "WP0CD2A94RS555555", year: 1992 }),
+    lot("bad2", { vin: "WP0CD2A94RS555555", year: 2015, soldAt: "2026-04-01T00:00:00.000Z" }),
+  ])]);
+
+  const level = id => index.identity(id).level;
+  assert.equal(level("multi2"), "multi");
+  assert.deepEqual(index.identity("multi1").sources.sort(), ["Bring a Trailer", "RM Sotheby's"]);
+  assert.equal(index.identity("multi1").sales, 2);
+  assert.equal(level("rep1"), "repeat");
+  assert.equal(level("dec"), "decoded");
+  assert.equal(index.identity("dec").checks, 1);
+  assert.equal(level("undec"), "undecoded");
+  assert.equal(level("ch"), "chassis");
+  assert.equal(level("weak"), "weak");
+  assert.equal(level("none"), "none");
+  assert.equal(level("conf"), "conflict");
+  assert.equal(level("bad1"), "inconsistent"); // один VIN, годы 1992 и 2015
+  assert.equal(index.identity("nope"), null);
+});
