@@ -132,9 +132,10 @@ const applyDecoded = (lot, result, now = Date.now()) => {
 
   const check = [];
   // Модельный год по VIN и год в названии часто различаются на единицу (машину продали в следующем календарном году) — это не ошибка; от двух лет — отмечаем.
-  // Код года в VIN повторяется каждые 30 лет (1993 и 2023 — одна буква), расшифровка берёт позднейший: разница в 30 лет — не ошибка.
+  // Код года в VIN повторяется каждые 30 лет (1993 и 2023 — одна буква), расшифровка берёт позднейший: разница около 30 лет — не ошибка.
+  // У старых европейских VIN (Land Rover и др.) десятая позиция не всегда код года, поэтому допуск — пять лет (1989 в лоте и 2015 по VIN).
   const yearGap = (info.year && typeof lot.year === "number") ? Math.abs(info.year - lot.year) : 0;
-  if (yearGap >= 2 && Math.abs(yearGap - 30) > 1)
+  if (yearGap >= 2 && Math.abs(yearGap - 30) > 5)
     check.push({ field: "year", lot: lot.year, vin: info.year });
   if (clean && Number.isFinite(displacement) && displacement > 0 && typeof lot.displacement === "number" && Math.abs(lot.displacement - displacement) > 0.15)
     check.push({ field: "displacement", lot: lot.displacement, vin: displacement });

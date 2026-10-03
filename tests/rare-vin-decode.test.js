@@ -133,6 +133,12 @@ test("a one-year difference between the VIN model year and the lot year is norma
   assert.equal(lot.vinCheck, undefined);
 });
 
+test("an old Land Rover VIN that decodes 26 years late is the same year-code ambiguity, not a discrepancy", () => {
+  const lot = { make: "Land Rover", year: 1989 };
+  applyDecoded(lot, { Make: "LAND ROVER", ModelYear: "2015", ErrorCode: "0" });
+  assert.equal(lot.vinCheck, undefined);
+});
+
 test("a 30-year gap is the VIN year code repeating (1993 vs 2023), not a real discrepancy", () => {
   const lot = { make: "Bugatti", year: 1993 };
   applyDecoded(lot, { Make: "BUGATTI", Model: "EB110", ModelYear: "2023", ErrorCode: "0" });
