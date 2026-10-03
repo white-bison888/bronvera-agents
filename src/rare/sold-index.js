@@ -65,7 +65,7 @@ const resaleKeyOf = (lot) => {
  *   multi — тот же VIN/шасси найден на двух и более площадках; repeat — продавалась несколько раз на одной;
  *   decoded — VIN есть и расшифрован, других записей нет; undecoded — VIN есть, расшифровка ничего не дала;
  *   chassis — только номер шасси (ищем среди лотов той же марки); weak — номер слишком короткий для поиска; none — идентификатора нет;
- *   conflict — VIN называет другую марку; inconsistent — под одним номером оказались разные марки или годы.
+ *   conflict — VIN называет другую марку; inconsistent — под одним номером оказались лоты с годами, различающимися больше чем на два.
  */
 const identityOf = (lot, group = []) => {
   const peers = group.length ? group : [lot];
@@ -78,9 +78,9 @@ const identityOf = (lot, group = []) => {
   if (!via)
     return { ...base, level: lot.chassis ? "weak" : "none" };
   if (peers.length >= 2) {
-    const makes = new Set(peers.map(peer => String(peer.make || "").toLowerCase()).filter(Boolean));
+    // Марки не сравниваем: у одной машины они бывают разными (Ford и Shelby, Mercedes-Benz и Mercedes-AMG); VIN главнее. Годы — да.
     const years = peers.map(peer => peer.year).filter(year => typeof year === "number");
-    if (makes.size > 1 || (years.length > 1 && Math.max(...years) - Math.min(...years) > 2))
+    if (years.length > 1 && Math.max(...years) - Math.min(...years) > 2)
       return { ...base, level: "inconsistent" };
     return { ...base, level: sources.length >= 2 ? "multi" : "repeat" };
   }
