@@ -49,8 +49,13 @@ const saveSoldArchive = (file, archive) => {
 
 /* Год — первый найденный токен 19xx/20xx в заголовке, как и у guessMake/guessModel. */
 const yearFromTitle = (title) => {
-  const match = String(title || "").match(/\b(19|20)\d{2}\b/);
-  return match ? Number(match[0]) : null;
+  const text = String(title || "");
+  const match = text.match(/\b(19|20)\d{2}\b/);
+  if (match)
+    return Number(match[0]);
+  // «383-Powered '32 Ford Roadster» — год записан двумя цифрами; на BaT такие лоты старинные, считаем 19xx.
+  const short = text.match(/['\u2019](\d{2})\b/);
+  return short ? 1900 + Number(short[1]) : null;
 };
 
 /*
