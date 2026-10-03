@@ -141,3 +141,12 @@ test("a 30-year gap is the VIN year code repeating (1993 vs 2023), not a real di
   applyDecoded(real, { Make: "BUGATTI", Model: "Veyron", ModelYear: "2004", ErrorCode: "0" });
   assert.deepEqual(real.vinCheck, [{ field: "year", lot: 2014, vin: 2004 }]);
 });
+
+test("«по VIN» is claimed only for values that actually came from the VIN, not for ones the lot already had from its title", () => {
+  const lot = { make: "Porsche", year: 1989, bodyStyle: "Тарга" }; // в названии «Targa»
+  applyDecoded(lot, { Make: "PORSCHE", Model: "911", ModelYear: "1989", BodyClass: "Convertible/Cabriolet", EngineCylinders: "6", DisplacementL: "3.2", ErrorCode: "2,14" });
+  assert.equal(lot.bodyStyle, "Тарга"); // название точнее грубого класса кузова из VIN
+  assert.ok(!lot.vinFields.includes("bodyStyle"));
+  assert.ok(lot.vinFields.includes("cylinders")); // эти поля были пустыми и заполнены из VIN
+  assert.ok(lot.vinFields.includes("displacement"));
+});

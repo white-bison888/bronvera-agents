@@ -103,20 +103,20 @@ const applyDecoded = (lot, result, now = Date.now()) => {
    * утверждает о самой машине (vinInfo) — марка, модель, год, версия, завод; и где она расходится с
    * тем, что написано в лоте (vinCheck) — год, объём двигателя, число цилиндров.
    */
-  const vinFields = [];
-  const mark = (key, value) => {
-    if (value !== null && value !== undefined && value !== "" && !(typeof value === "number" && !Number.isFinite(value)))
-      vinFields.push(key);
+  // vinFields — только те поля, чьё значение на карточке действительно получено из VIN: расшифровка могла дать значение, но
+  // в лоте осталось своё (например, VIN говорит «кабриолет», а в названии «Targa») — тогда метку «по VIN» не ставим.
+  const derived = {
+    cylinders: Number.isFinite(cylinders) && cylinders > 0 ? cylinders : null,
+    displacement: Number.isFinite(displacement) && displacement > 0 ? displacement : null,
+    engineLayout: layout,
+    bodyStyle: (BODY_BY_CLASS.find(([pattern]) => pattern.test(String(result.BodyClass || ""))) || [])[1] ?? null,
+    drivetrain: driveOf(result.DriveType),
+    aspiration: String(result.Turbo || "").toLowerCase() === "yes" ? "Турбо" : null,
+    generation: String(result.Series || "").replace(/^Type\s+/i, "") || null,
+    hp: Number(result.EngineHP) > 0 ? Number(result.EngineHP) : null,
+    plantCountry: String(result.PlantCountry || "").trim() || null,
   };
-  mark("cylinders", Number.isFinite(cylinders) && cylinders > 0 ? cylinders : null);
-  mark("displacement", Number.isFinite(displacement) && displacement > 0 ? displacement : null);
-  mark("engineLayout", layout);
-  mark("bodyStyle", (BODY_BY_CLASS.find(([pattern]) => pattern.test(String(result.BodyClass || ""))) || [])[1]);
-  mark("drivetrain", driveOf(result.DriveType));
-  mark("aspiration", String(result.Turbo || "").toLowerCase() === "yes" ? "Турбо" : null);
-  mark("generation", String(result.Series || "").replace(/^Type\s+/i, "") || null);
-  mark("hp", Number(result.EngineHP) > 0 ? Number(result.EngineHP) : null);
-  mark("plantCountry", String(result.PlantCountry || "").trim() || null);
+  const vinFields = [];
 
   const info = {
     make: result.Make,
@@ -173,6 +173,10 @@ const applyDecoded = (lot, result, now = Date.now()) => {
   changed += fillIfEmpty(lot, "plantCountry", String(result.PlantCountry || "").trim() || null);
   changed += fillIfEmpty(lot, "year", Number(result.ModelYear) > 1980 ? Number(result.ModelYear) : null);
 
+  for (const [key, value] of Object.entries(derived)) {
+    if (value !== null && lot[key] === value)
+      vinFields.push(key);
+  }
   if (vinFields.length)
     lot.vinFields = vinFields;
 
