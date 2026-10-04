@@ -100,13 +100,13 @@ const engineOf = (...texts) => {
   let displacement = null;
   const liters = text.match(/\b(\d{1,2}(?:\.\d{1,2})?)[- ]?(?:liter|litre|l)\b/i);
   const cubicInches = text.match(/\b(\d{2,3})\s?(?:ci|cu\.?\s?in|cubic[- ]inch)\b/i);
-  const cc = text.match(/\b(\d{3,4})\s?cc\b/i);
+  const cc = text.match(/\b(\d{1,2}[,.]\d{3}|\d{3,4})\s?cc\b/i); // «4,957 CC» — с разделителем тысяч
   if (liters && Number(liters[1]) >= 0.5 && Number(liters[1]) <= 9)
     displacement = Number(liters[1]);
   else if (cubicInches && Number(cubicInches[1]) >= 80 && Number(cubicInches[1]) <= 600)
     displacement = Math.round(Number(cubicInches[1]) * 0.0163871 * 10) / 10;
-  else if (cc && Number(cc[1]) >= 500 && Number(cc[1]) <= 9000)
-    displacement = Math.round(Number(cc[1]) / 100) / 10;
+  else if (cc && Number(cc[1].replace(/[,.]/g, "")) >= 500 && Number(cc[1].replace(/[,.]/g, "")) <= 9000)
+    displacement = Math.round(Number(cc[1].replace(/[,.]/g, "")) / 100) / 10;
 
   // «Turbo-Look» — внешний пакет (кузов как у Turbo), мотор при этом атмосферный: на наддув не указывает.
   const forAspiration = text.replace(/turbo[- ]?look/gi, " ");

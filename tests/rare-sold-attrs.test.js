@@ -123,3 +123,10 @@ test("isLowMileage is relative to age: 8k miles on a 37-year-old car is low, on 
   assert.equal(isLowMileage({ mileage: 45000, year: 1995, soldAt: "2026-01-01" }), false);
   assert.equal(isLowMileage({ mileage: null, year: 1989 }), false);
 });
+
+test("an engine size in cc with a thousands separator is read in full (4,957 CC is 5.0 litres, not 957 cc)", () => {
+  assert.equal(parseVehicleAttributes("1989 RUF 928R", "4,957 CC M28/42 DOHC 32-Valve V-8 Engine").displacement, 5);
+  assert.equal(parseVehicleAttributes("1959 Ferrari 250 GT", "2,953 CC Tipo 128D SOHC V-12 Engine").displacement, 3);
+  assert.equal(parseVehicleAttributes("1960 Mini", "850 cc inline four").displacement, 0.9);
+  assert.equal(parseVehicleAttributes("1960 Car", "1,998cc Inline 4-cylinder").displacement, 2);
+});

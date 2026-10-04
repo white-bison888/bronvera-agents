@@ -30,6 +30,7 @@ const PcarmarketScraper = require("./rare/pcarmarket-scraper");
 const RmSothebysScraper = require("./rare/rmsothebys-scraper");
 const CarsAndBidsScraper = require("./rare/carsandbids-scraper");
 const HemmingsScraper = require("./rare/hemmings-scraper");
+const GoodingScraper = require("./rare/gooding-scraper");
 const CollectingCarsScraper = require("./rare/collectingcars-scraper");
 const RareAlerts = require("./rare/alerts");
 const { SoldIndex } = require("./rare/sold-index");
@@ -93,6 +94,8 @@ const carsAndBidsScraper = new CarsAndBidsScraper({ alerts: rareAlerts, dataDir:
 const hemmingsScraper = new HemmingsScraper({ alerts: rareAlerts, dataDir: path.join(process.cwd(), "data", "rare", "hemmings") });
 // Collecting Cars закрыт тем же Cloudflare managed-challenge, что PCARMARKET/Cars & Bids, — тот же резидентный прокси.
 const collectingCarsScraper = new CollectingCarsScraper({ alerts: rareAlerts, dataDir: path.join(process.cwd(), "data", "rare", "collectingcars") });
+// Gooding & Company — сайт на Gatsby, итоги и лоты отдаёт открытым статическим JSON (page-data), robots.txt разрешает всё: ни прокси, ни браузер не нужны.
+const goodingScraper = new GoodingScraper({ alerts: rareAlerts, dataDir: path.join(process.cwd(), "data", "rare", "gooding") });
 const rareSources = [
   { id: "bat", scraper: rareScraper },
   { id: "pcarmarket", scraper: pcarmarketScraper },
@@ -100,6 +103,7 @@ const rareSources = [
   { id: "cars-and-bids", scraper: carsAndBidsScraper },
   { id: "hemmings", scraper: hemmingsScraper },
   { id: "collecting-cars", scraper: collectingCarsScraper },
+  { id: "gooding", scraper: goodingScraper },
 ];
 
 /*
@@ -1419,4 +1423,5 @@ app.listen(PORT, () => {
   carsAndBidsScraper.start();
   hemmingsScraper.start();
   collectingCarsScraper.start();
+  goodingScraper.start();
 });
