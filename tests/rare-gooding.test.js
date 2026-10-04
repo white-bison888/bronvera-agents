@@ -65,14 +65,17 @@ test("updateSoldArchive keeps sold cars with a price, skips unsold, motorcycles 
         { slug: "1966-porsche-911", salePrice: 140000, lotNumber: 2, item: vehicle("1966 Porsche 911 (FL26)", 1966, "Porsche") },
         { slug: "1913-silver-ghost", salePrice: null, lotNumber: 50, item: vehicle("1913 Rolls-Royce Silver Ghost", 1913, "Rolls-Royce") },
         { slug: "poster", salePrice: 500, lotNumber: 9, item: { __typename: "ContentfulAutomobilia", title: "Poster" } },
+        { slug: "1999-ducati-916", salePrice: 30000, lotNumber: 10, item: vehicle("1999 Ducati 916", 1999, "Ducati ") },
+        { slug: "1970-citroen-sm", salePrice: 80000, lotNumber: 11, item: vehicle("1970 Citroen SM", 1970, "Citroen") },
       ]),
       "/auction/realized/geneva-auction-2027/page-data.json": auctionPage([{ slug: "future-car", salePrice: 90000, lotNumber: 1, item: vehicle("2027 Future", 2027, "Ferrari") }], { currency: "EUR", end: "2027-02-06T20:00+01:00" }),
     }),
   });
 
-  assert.equal(await scraper.updateSoldArchive(), 1);
+  assert.equal(await scraper.updateSoldArchive(), 2); // «Porsche» и «Citroën»; мотоцикл, снятый лот, автомобилия и будущие торги не берём
 
-  const lot = scraper.readSold()[0];
+  assert.equal(scraper.readSold().find(item => item.id === "gooding-1970-citroen-sm").make, "Citroën");
+  const lot = scraper.readSold().find(item => item.id === "gooding-1966-porsche-911");
   assert.equal(lot.id, "gooding-1966-porsche-911");
   assert.equal(lot.title, "1966 Porsche 911");
   assert.equal(lot.make, "Porsche");

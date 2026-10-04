@@ -125,4 +125,4 @@ const guessModel = (title, make) => {
   return words.join(" ") || null;
 };
 
-module.exports = { guessMake, guessModel };
+module.exports = { guessMake, guessModel, canonicalMake };

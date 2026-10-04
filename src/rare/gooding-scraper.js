@@ -1,6 +1,6 @@
 const fs = require("fs");
 const path = require("path");
-const { guessMake, guessModel } = require("./title-parser");
+const { guessMake, guessModel, canonicalMake } = require("./title-parser");
 const { loadSoldArchive, readSoldArchiveCached, saveSoldArchive, soldArchiveLocked, yearFromTitle } = require("./sold-archive");
 const { FxRates, reconvertArchive } = require("./fx");
 const { bodyStyleOf, parseVehicleAttributes } = require("./sold-attrs");
@@ -32,6 +32,12 @@ const CLOSING_SOON_MS = 48 * 3600 * 1000;
 const SETTLE_MS = 3 * 24 * 3600 * 1000; // через столько после последнего дня торгов итоги считаем окончательными
 const MAX_AUCTIONS_PER_RUN = 60;
 const NOT_CAR_AUCTION = /motorcycle|automobilia|art-collectibles|lifestyle/i;
+// В онлайн-аукционах Gooding рядом с автомобилями идут мотоциклы и мотороллеры, в списке лотов тот же тип «Vehicle» — отсекаем по марке.
+const MOTORCYCLE_MAKES = new Set([
+  "ducati", "moto guzzi", "mv agusta", "vincent", "vincent hrd", "laverda", "benelli", "matchless", "norton", "bsa", "indian", "lambretta",
+  "malanca", "f.b. mondial", "parilla", "magni", "dunstall", "terrot", "magnat-debon", "solex", "egli-honda", "piaggio", "harley-davidson",
+  "brough superior", "cushman", "husqvarna", "yamaha", "kawasaki", "vespa", "bultaco", "ktm",
+]);
 
 const pageDataUrl = route => `${BASE_URL}/page-data/${route.replace(/^\/+|\/+$/g, "")}/page-data.json`;
 
@@ -93,7 +99,7 @@ const identityOf = (entry) => {
   const item = entry.item || {};
   const title = cleanTitle(item.title);
   const year = Number.isFinite(item.modelYear) ? item.modelYear : yearFromTitle(title);
-  const make = item.make?.name || guessMake(title);
+  const make = canonicalMake((item.make?.name || guessMake(title)).trim());
   return { title, year, make, model: guessModel(title, make), item };
 };
 
@@ -101,8 +107,8 @@ const toSoldLot = (entry, auction, code, endDate) => {
   if (!isVehicle(entry) || !endDate || !(entry.salePrice > 0))
     return null;
   const { title, year, make, model, item } = identityOf(entry);
-  if (!year || !make)
-    return null; // без года — не автомобиль (запчасти, сувениры)
+  if (!year || !make || MOTORCYCLE_MAKES.has(make.toLowerCase()))
+    return null; // без года — не автомобиль (запчасти, сувениры); мотоциклы — отдельный рынок
 
   return {
     id: `gooding-${entry.slug}`,
@@ -131,6 +137,8 @@ const toSoldLot = (entry, auction, code, endDate) => {
 
 const toRareLot = (entry, closesAt, now) => {
   const { title, make, model, item } = identityOf(entry);
+  if (MOTORCYCLE_MAKES.has(make.toLowerCase()))
+    return null;
   return {
     id: `gooding-${entry.slug}`,
     title,
@@ -298,8 +306,9 @@ class GoodingScraper {
         if (!closesAt || Date.parse(closesAt) <= now)
           continue;
         for (const edge of data.allContentfulLot?.edges || []) {
-          if (edge.node?.slug && isVehicle(edge.node))
-            lots.push(toRareLot(edge.node, closesAt, now));
+          const lot = edge.node?.slug && isVehicle(edge.node) ? toRareLot(edge.node, closesAt, now) : null;
+          if (lot)
+            lots.push(lot);
         }
         await this.sleep(300);
       }
