@@ -1,6 +1,7 @@
 const fs = require("fs");
 const path = require("path");
 const { guessMake, guessModel } = require("./title-parser");
+const { runFinishInChild } = require("./finish-new-sold");
 const { loadSoldArchive, readSoldArchiveCached, saveSoldArchive, soldArchiveLocked, yearFromTitle } = require("./sold-archive");
 const { FxRates, reconvertArchive } = require("./fx");
 const { bodyStyleOf, parseVehicleAttributes } = require("./sold-attrs");
@@ -556,6 +557,8 @@ class RmSothebysScraper {
 
       if (!soldArchiveLocked(this.dataDir))
         await this.updateSoldArchive().catch(error => this.log("BRONVERA Rare: не добрал архив продаж RM Sotheby's:", error.message));
+      if (this.finishSoldKey && !soldArchiveLocked(this.dataDir))
+        await runFinishInChild(this.finishSoldKey, this.log);
 
       if (this.alerts) {
         const newLots = enriched.filter(lot => !previousIds.has(lot.id));

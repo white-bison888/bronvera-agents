@@ -1,6 +1,7 @@
 const fs = require("fs");
 const path = require("path");
 const { guessMake, guessModel } = require("./title-parser");
+const { runFinishInChild } = require("./finish-new-sold");
 const { loadSoldArchive, readSoldArchiveCached, saveSoldArchive, soldArchiveLocked, yearFromTitle } = require("./sold-archive");
 const { FxRates, reconvertArchive } = require("./fx");
 const { parseMileageText, transmissionKind } = require("./sold-fields");
@@ -331,6 +332,8 @@ class CollectingCarsScraper {
 
       if (!soldArchiveLocked(this.dataDir))
         await this.updateSoldArchive().catch(error => this.log("BRONVERA Rare: не добрал архив продаж Collecting Cars:", error.message));
+      if (this.finishSoldKey && !soldArchiveLocked(this.dataDir))
+        await runFinishInChild(this.finishSoldKey, this.log);
 
       if (this.alerts) {
         const newLots = lots.filter(lot => !previousIds.has(lot.id));

@@ -96,6 +96,13 @@ const hemmingsScraper = new HemmingsScraper({ alerts: rareAlerts, dataDir: path.
 const collectingCarsScraper = new CollectingCarsScraper({ alerts: rareAlerts, dataDir: path.join(process.cwd(), "data", "rare", "collectingcars") });
 // Gooding & Company — сайт на Gatsby, итоги и лоты отдаёт открытым статическим JSON (page-data), robots.txt разрешает всё: ни прокси, ни браузер не нужны.
 const goodingScraper = new GoodingScraper({ alerts: rareAlerts, dataDir: path.join(process.cwd(), "data", "rare", "gooding") });
+// После суточного захода каждый из этих источников дорабатывает свои новые проданные лоты в отдельном процессе:
+// страницы лотов (цвет, пробег, шасси/VIN, особенности) и расшифровка VIN — см. src/rare/finish-new-sold.js.
+rareScraper.finishSoldKey = "bat";
+rmSothebysScraper.finishSoldKey = "rm-sothebys";
+hemmingsScraper.finishSoldKey = "hemmings";
+collectingCarsScraper.finishSoldKey = "collecting-cars";
+goodingScraper.finishSoldKey = "gooding";
 const rareSources = [
   { id: "bat", scraper: rareScraper },
   { id: "pcarmarket", scraper: pcarmarketScraper },

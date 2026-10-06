@@ -2,6 +2,7 @@ const fs = require("fs");
 const path = require("path");
 const { describeTransmission } = require("./transmission");
 const { guessMake, guessModel } = require("./title-parser");
+const { runFinishInChild } = require("./finish-new-sold");
 const { loadSoldArchive, readSoldArchiveCached, saveSoldArchive, soldArchiveLocked, yearFromTitle } = require("./sold-archive");
 const { FxRates } = require("./fx");
 const { classifyVin, colorGroupOf, decodeEntities: decodeBatEntities, parseBatExcerpt, transmissionKind } = require("./sold-fields");
@@ -640,6 +641,8 @@ class BatScraper {
       else {
         this.updateSoldArchive(enriched);
         await this.updateSoldFromCompleted().catch(error => this.log("BRONVERA Rare: не добрал итоги BaT из списка завершённых:", error.message));
+        if (this.finishSoldKey)
+          await runFinishInChild(this.finishSoldKey, this.log);
       }
 
       if (this.alerts) {

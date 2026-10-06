@@ -1,5 +1,6 @@
 const fs = require("fs");
 const path = require("path");
+const { runFinishInChild } = require("./finish-new-sold");
 const { loadSoldArchive, readSoldArchiveCached, saveSoldArchive, soldArchiveLocked, yearFromTitle } = require("./sold-archive");
 const { parseVehicleAttributes } = require("./sold-attrs");
 const { classifyVin } = require("./sold-fields");
@@ -337,6 +338,8 @@ class HemmingsScraper {
 
       if (!soldArchiveLocked(this.dataDir))
         await this.updateSoldArchive().catch(error => this.log("BRONVERA Rare: не добрал архив продаж Hemmings:", error.message));
+      if (this.finishSoldKey && !soldArchiveLocked(this.dataDir))
+        await runFinishInChild(this.finishSoldKey, this.log);
 
       if (this.alerts) {
         const newLots = lots.filter(lot => !previousIds.has(lot.id));
