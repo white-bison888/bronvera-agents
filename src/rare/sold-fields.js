@@ -87,8 +87,18 @@ const colorGroupOf = (raw) => {
   return "Другой";
 };
 
-const HTML_ENTITIES = { amp: "&", quot: "\"", "#039": "'", "#8217": "'", "#8220": "\"", "#8221": "\"", apos: "'", nbsp: " " };
-const decodeEntities = text => String(text || "").replace(/&(#\d+|[a-z]+);/gi, (full, code) => HTML_ENTITIES[code.toLowerCase()] ?? full);
+const HTML_ENTITIES = { amp: "&", quot: "\"", "#039": "'", "#8217": "'", "#8220": "\"", "#8221": "\"", apos: "'", nbsp: " ", ndash: "–", mdash: "—", times: "×", lsquo: "'", rsquo: "'", ldquo: "\"", rdquo: "\"" };
+// «4&#215;4» → «4×4», «B&#038;B» → «B&B»: сперва известные замены, потом любой числовой код (десятичный и 16-ричный).
+const decodeEntities = text => String(text || "").replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);/gi, (full, code) => {
+  const known = HTML_ENTITIES[code.toLowerCase()];
+  if (known !== undefined)
+    return known;
+  if (code[0] === "#") {
+    const point = code[1] === "x" || code[1] === "X" ? parseInt(code.slice(2), 16) : parseInt(code.slice(1), 10);
+    return Number.isFinite(point) && point > 0 && point < 0x110000 ? String.fromCodePoint(point) : full;
+  }
+  return full;
+});
 
 /*
  * Описание лота BaT («excerpt») пишется по одному шаблону: «…is finished in

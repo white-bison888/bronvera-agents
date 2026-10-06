@@ -99,3 +99,12 @@ test("classifyVin tells a real 17-character VIN from an old chassis number", () 
   assert.deepEqual(classifyVin("125"), { chassis: "125" }); // короткие номера шасси гоночных машин — настоящие
   assert.deepEqual(classifyVin("-"), {});
 });
+
+test("decodeEntities reads any numeric HTML entity, so 4&#215;4 is 4×4 and B&#038;B is B&B", () => {
+  const { decodeEntities } = require("../src/rare/sold-fields");
+  assert.equal(decodeEntities("Ford F-150 4&#215;4"), "Ford F-150 4×4");
+  assert.equal(decodeEntities("460-Powered B&#038;B Manufacturing"), "460-Powered B&B Manufacturing");
+  assert.equal(decodeEntities("16&#8242; Boat &amp; Trailer"), "16′ Boat & Trailer");
+  assert.equal(decodeEntities("caf&#xE9;"), "café");
+  assert.equal(decodeEntities("unknown &zzz; stays"), "unknown &zzz; stays");
+});

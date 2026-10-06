@@ -307,7 +307,7 @@ test("identity level says how sure we are which car this is, from identifiers on
     lot("none", {}),
     lot("conf", { vin: "WP0CD2A94RS444444", vinDecoded: true, vinMismatch: "Audi" }),
     lot("bad1", { vin: "WP0CD2A94RS555555", year: 1992 }),
-    lot("bad2", { vin: "WP0CD2A94RS555555", year: 2015, soldAt: "2026-04-01T00:00:00.000Z" }),
+    lot("bad2", { vin: "WP0CD2A94RS555555", year: 2015, soldAt: "2026-09-01T00:00:00.000Z" }),
   ])]);
 
   const level = id => index.identity(id).level;
@@ -324,4 +324,34 @@ test("identity level says how sure we are which car this is, from identifiers on
   assert.equal(level("conf"), "conflict");
   assert.equal(level("bad1"), "inconsistent"); // один VIN, годы 1992 и 2015
   assert.equal(index.identity("nope"), null);
+});
+
+test("the same car sold again on the same platform within 45 days is a relist, not a resale; a quick flip to another platform still counts", () => {
+  const dir = tmpDir();
+  const index = new SoldIndex([fakeScraper(dir, "a", [
+    lot("r1", { vin: "WP0CD2A94RS600001", soldAt: "2026-03-01T00:00:00.000Z", salePrice: 25000 }),
+    lot("r2", { vin: "WP0CD2A94RS600001", soldAt: "2026-03-21T00:00:00.000Z", salePrice: 27000 }), // выкуп не состоялся, лот выставили снова
+    lot("f1", { vin: "WP0CD2A94RS600002", soldAt: "2026-03-01T00:00:00.000Z", salePrice: 25000 }),
+    lot("f2", { vin: "WP0CD2A94RS600002", soldAt: "2026-03-08T00:00:00.000Z", salePrice: 30000, source: "RM Sotheby's" }),
+    lot("g1", { vin: "WP0CD2A94RS600003", soldAt: "2025-03-01T00:00:00.000Z" }),
+    lot("g2", { vin: "WP0CD2A94RS600003", soldAt: "2026-03-01T00:00:00.000Z" }),
+  ])]);
+  assert.deepEqual(index.history("r2"), []); // осталась одна запись
+  assert.deepEqual(index.history("f2").map(l => l.id), ["f1", "f2"]);
+  assert.deepEqual(index.history("g2").map(l => l.id), ["g1", "g2"]);
+});
+
+test("signs, bicycles, motorcycles and boats stay out of the index, and lots without a year are not used as comparables", () => {
+  const dir = tmpDir();
+  const lots = [
+    lot("car", { title: "1992 Porsche 911 Carrera", year: 1992 }),
+    lot("sign", { title: "Neon Plymouth Road Runner Sign", make: "Neon", year: null }),
+    lot("bike", { title: "Four Schwinn Sting-Ray Bicycles", make: "Four", year: null }),
+    lot("moto", { title: "1999 Ducati 916", make: "Ducati", year: 1999 }),
+    lot("noyear", { title: "Porsche 911 Replica", year: null }),
+  ];
+  const index = new SoldIndex([fakeScraper(dir, "a", lots)]);
+  assert.deepEqual(index.points().rows.map(row => row[0]).sort(), ["car", "noyear"]);
+  assert.equal(index.lot("sign"), null);
+  assert.ok(!(index.comparables("car")?.lots || []).some(item => item.id === "noyear"));
 });

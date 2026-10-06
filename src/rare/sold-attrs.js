@@ -226,4 +226,22 @@ const fillAttributes = (lot, description = "") => {
   return changed;
 };
 
-module.exports = { flagsOf, isLowMileage, fillAttributes, engineLabel, bodyStyleOf, drivetrainOf, engineOf, parseVehicleAttributes, steeringOf };
+
+/*
+ * «Не машина» (06.10.2026): вывески, мотоциклы, велосипеды, лодки, дома на колёсах и инструменты попадают в архив площадок
+ * (BaT продаёт всё подряд), но в Stats о машинах им не место — они искажали «Сравнимые продажи» и списки марок.
+ * В архиве лоты остаются как есть, отсекаются при построении индекса.
+ */
+const NOT_CAR_MAKES = new Set([
+  "schwinn", "airstream", "winnebago", "jayco", "polaris", "freightliner", "cushman", "chris-craft", "donzi", "riva", "evinrude",
+  "kinetic", "oliver", "illuminated", "neon", "half-scale", "john deere", "american lafrance", "mobil-branded", "mack",
+  "harley-davidson", "indian", "bsa", "norton", "mv", "ducati", "moto guzzi", "vincent", "husqvarna", "ktm", "vespa", "lambretta",
+  "yamaha", "kawasaki", "aprilia", "piaggio", "laverda", "benelli", "matchless", "parilla", "magni", "dunstall", "terrot", "solex", "brough superior",
+]);
+const NOT_CAR_TITLE = /\b(signs?|neon|illuminated|bicycles?|tricycle|trolley|jet engine|outboard|pedal car|mannequin|memorabilia|poster|jukebox|clock|tool chest|toolbox|seats for|wheels for|gas pump|petrol pump|motorcycle|scooter|moped|snowmobile|tractor|sidecar)\b/i;
+const isNotCar = (lot) => {
+  const make = String(lot?.make || "").trim().toLowerCase();
+  return NOT_CAR_MAKES.has(make) || NOT_CAR_TITLE.test(String(lot?.title || ""));
+};
+
+module.exports = { isNotCar, flagsOf, isLowMileage, fillAttributes, engineLabel, bodyStyleOf, drivetrainOf, engineOf, parseVehicleAttributes, steeringOf };

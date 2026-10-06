@@ -1,5 +1,5 @@
 const fs = require("fs");
-const { engineLabel, flagsOf, isLowMileage } = require("./sold-attrs");
+const { engineLabel, flagsOf, isLowMileage, isNotCar } = require("./sold-attrs");
 const { buildFamilyResolver } = require("./model-family");
 
 /*
@@ -90,6 +90,24 @@ const identityOf = (lot, group = []) => {
 };
 
 /*
+ * Повторные торги — не перепродажа: если машина снова ушла с молотка на той же площадке меньше чем через 45 дней
+ * (покупатель не выкупил, резерв не достигнут и лот выставили заново), настоящей считаем только последнюю запись.
+ * Перепродажа на другой площадке остаётся перепродажей даже за неделю.
+ */
+const RELIST_DAYS = 45;
+const collapseRelists = (members) => {
+  const kept = [];
+  for (const lot of [...members].sort((a, b) => Date.parse(a.soldAt) - Date.parse(b.soldAt))) {
+    const last = kept[kept.length - 1];
+    if (last && last.source === lot.source && Date.parse(lot.soldAt) - Date.parse(last.soldAt) < RELIST_DAYS * 86400_000)
+      kept[kept.length - 1] = lot;
+    else
+      kept.push(lot);
+  }
+  return kept;
+};
+
+/*
  * Особенности лота битами (см. FLAG_RULES в sold-attrs.js): 1 доработана, 2 проект, 4 оригинал,
  * 8 реставрирована, 16 один владелец, 32 особая версия, 64 малый пробег (считается по пробегу и возрасту).
  */
@@ -161,7 +179,7 @@ class SoldIndex {
 
     const lots = sources
       .flatMap(scraper => scraper.readSold())
-      .filter(lot => lot && lot.soldAt && typeof lot.salePrice === "number")
+      .filter(lot => lot && lot.soldAt && typeof lot.salePrice === "number" && !isNotCar(lot))
       .sort((a, b) => Date.parse(b.soldAt) - Date.parse(a.soldAt));
 
     // Особенности по названию — для лотов, у которых архив их ещё не посчитал (например, Bring a Trailer, пока идёт
@@ -192,11 +210,12 @@ class SoldIndex {
     }
     this.resaleGroups = [];
     this.resaleOf = new Map();
-    for (const group of byKey.values()) {
+    for (const members of byKey.values()) {
+      const group = collapseRelists(members);
       if (group.length < 2)
         continue;
       const index = this.resaleGroups.length;
-      this.resaleGroups.push(group.sort((a, b) => Date.parse(a.soldAt) - Date.parse(b.soldAt)));
+      this.resaleGroups.push(group);
       for (const lot of group)
         this.resaleOf.set(lot.id, index);
     }
@@ -284,7 +303,7 @@ class SoldIndex {
     // отличается от обычной сильно, но в «ближайшие» попасть может — с пометкой, если «таких же» мало.
     const hasFlag = (other, code) => (other.flags || []).includes(code);
     const pool = mine.family
-      ? this.lots.filter(other => other.id !== lot.id && other.make === lot.make && other.sold !== false
+      ? this.lots.filter(other => other.id !== lot.id && other.make === lot.make && other.sold !== false && typeof other.year === "number"
         && this.resolveFamily(other).family === mine.family
         && hasFlag(other, "modified") === myFlags.has("modified"))
       : [];
