@@ -209,13 +209,15 @@ test("comparables() shows only the same cars when there are enough of them, and 
 });
 
 test("comparables() adds the nearest cars by class and age when there are few identical ones, and labels how each differs", () => {
+  // Поколение берётся из справочника (по годам): 2012–2015 — 991.1, 2020 — 992.1, 1990 — 964.
+  const c = (id, o = {}) => car(id, { model: "911 Carrera", ...o });
   const index = new SoldIndex([fakeScraper(tmpDir(), "a", [
-    car("me", { year: 2014, model: "911 Carrera 3.2", generation: "991.1" }),
-    car("twin", { year: 2014, generation: "991.1", salePrice: 90000 }),
-    car("gen992", { year: 2020, generation: "992", salePrice: 150000 }),
-    car("near-year", { year: 2016, generation: "991.1", transmissionKind: "automatic", salePrice: 95000 }),
-    car("far", { year: 1990, generation: "964", salePrice: 40000 }),
-    ...Array.from({ length: 4 }, (_, i) => car(`other${i}`, { year: 2012 + i, generation: "991.1", bodyStyle: "Купе", salePrice: 70000 + i })),
+    c("me", { year: 2014 }),
+    c("twin", { year: 2014, salePrice: 90000 }),
+    c("gen992", { year: 2020, salePrice: 150000 }),
+    c("near-year", { year: 2015, transmissionKind: "automatic", salePrice: 95000 }),
+    c("far", { year: 1990, salePrice: 40000 }),
+    ...Array.from({ length: 4 }, (_, i) => c(`other${i}`, { year: 2012 + i, bodyStyle: "Купе", salePrice: 70000 + i })),
   ])]);
 
   const comps = index.comparables("me");
@@ -228,7 +230,7 @@ test("comparables() adds the nearest cars by class and age when there are few id
   const byId = Object.fromEntries(comps.lots.map(l => [l.id, l]));
   assert.equal(byId["near-year"].similarity, "near");
   assert.ok(byId["near-year"].differs.includes("автомат"));
-  assert.ok(byId.gen992.differs.includes("поколение 992"));
+  assert.ok(byId.gen992.differs.includes("поколение 992.1"));
   assert.ok(byId.other0.differs.includes("кузов: Купе"));
   // ближайшие идут раньше далёких: машина 1990 года и другого поколения — в самом конце
   const order = ids(comps.lots);

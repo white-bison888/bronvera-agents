@@ -2,6 +2,8 @@ const fs = require("fs");
 const { engineLabel, flagsOf, isLowMileage, isNotCar } = require("./sold-attrs");
 const { buildFamilyResolver } = require("./model-family");
 const { REGIONS, regionOf } = require("./regions");
+const { canonicalizeLot, loadExtra, makeResolver } = require("./model-directory");
+const { computeMovement, rankMovement } = require("./price-movement");
 const REGION_LABELS = Object.fromEntries(REGIONS.map(region => [region.id, region.label]));
 
 /*
@@ -173,8 +175,9 @@ const signatureOf = (files) => {
 };
 
 class SoldIndex {
-  constructor(scrapers) {
+  constructor(scrapers, { extraDirectoryFile = null } = {}) {
     this.scrapers = scrapers;
+    this.extraDirectoryFile = extraDirectoryFile;
     this.signature = null;
     this.lots = [];
     this.byId = new Map();
@@ -203,7 +206,17 @@ class SoldIndex {
 
     this.lots = lots;
     this.byId = new Map(lots.map(lot => [lot.id, lot]));
-    this.resolveFamily = buildFamilyResolver(lots);
+    for (const lot of lots)
+      canonicalizeLot(lot);
+    // Справочник моделей (model-directory.js) главнее автоматического разбора: он знает поколения и сводит «380SL» и «560 SL» в одну линейку.
+    const directory = makeResolver(loadExtra(this.extraDirectoryFile));
+    const automatic = buildFamilyResolver(lots);
+    this.resolveFamily = (lot) => {
+      const found = directory(lot);
+      if (found.listed)
+        return { family: found.family, trim: found.trim, generation: found.generation, generationLabel: found.generationLabel, listed: true };
+      return { ...automatic(lot), listed: false };
+    };
 
     // Группы одной и той же машины, проданной не раз: id лота → номер группы.
     const byKey = new Map();
@@ -259,7 +272,10 @@ class SoldIndex {
       const at = Date.parse(lot.soldAt);
       if ((since !== null && at < since) || (until !== null && at >= until))
         continue;
-      const { family, trim, generation } = this.resolveFamily(lot);
+      const resolved = this.resolveFamily(lot);
+      const { family } = resolved;
+      const trim = lot.trimName || resolved.trim;
+      const generation = resolved.listed ? (resolved.generation ?? lot.generation ?? null) : (lot.generation || resolved.generation);
       rows.push([
         lot.id,
         Math.floor(at / 1000),
@@ -275,8 +291,8 @@ class SoldIndex {
         code("body", lot.bodyStyle),
         code("engine", engineLabel(lot)),
         code("drive", lot.drivetrain),
-        code("trim", lot.trimName || trim),
-        code("generation", lot.generation || generation),
+        code("trim", trim),
+        code("generation", generation),
         this.resaleOf.has(lot.id) ? this.resaleOf.get(lot.id) : -1,
         flagMask(lot),
         code("region", regionOf(lot).region),
@@ -303,9 +319,11 @@ class SoldIndex {
       return null;
 
     const resolved = this.resolveFamily(lot);
-    const mine = { ...resolved, trim: lot.trimName || resolved.trim, generation: lot.generation || resolved.generation };
-    const trimOf = other => other.trimName || this.resolveFamily(other).trim;
-    const generationOf = other => other.generation || this.resolveFamily(other).generation;
+    const trimFrom = (other, found) => other.trimName || found.trim; // названная площадкой комплектация («Turbo S» у Collecting Cars) точнее остатка названия
+    const generationFrom = (other, found) => (found.listed ? (found.generation ?? other.generation ?? null) : (other.generation || found.generation));
+    const mine = { ...resolved, trim: trimFrom(lot, resolved), generation: generationFrom(lot, resolved) };
+    const trimOf = other => trimFrom(other, this.resolveFamily(other));
+    const generationOf = other => generationFrom(other, this.resolveFamily(other));
     const myFlags = new Set(lot.flags || []);
     const myCondition = conditionOf(lot);
     const myRegion = regionOf(lot).region;
@@ -464,6 +482,22 @@ class SoldIndex {
     if (index === undefined)
       return [];
     return this.resaleGroups[index].map(fullLot);
+  }
+
+  /*
+   * «Что дорожает»: изменение цены за 12 месяцев по равным позициям внутри региона и площадки (см. price-movement.js).
+   * Расчёт тяжёлый (все продажи за два года), поэтому кэшируется до смены архива или до следующих суток.
+   */
+  movement({ region = "US", limit = 10, now = Date.now() } = {}) {
+    this.refresh();
+    const dayKey = Math.floor(now / 86400_000);
+    if (!this.movementCache || this.movementCache.signature !== this.signature || this.movementCache.dayKey !== dayKey)
+      this.movementCache = { signature: this.signature, dayKey, items: computeMovement(this.lots, this.resolveFamily, { now }) };
+    return {
+      asOf: new Date(now).toISOString().slice(0, 10),
+      months: 12,
+      ...rankMovement(this.movementCache.items, { region, limit }),
+    };
   }
 
   /* Уровень уверенности в личности машины для страницы лота (см. identityOf). */

@@ -41,6 +41,8 @@ const RmSothebysScraper = require("./rare/rmsothebys-scraper");
 const CarsAndBidsScraper = require("./rare/carsandbids-scraper");
 const HemmingsScraper = require("./rare/hemmings-scraper");
 const GoodingScraper = require("./rare/gooding-scraper");
+const { ModelRequests } = require("./rare/model-requests");
+const { loadExtra } = require("./rare/model-directory");
 const CollectingCarsScraper = require("./rare/collectingcars-scraper");
 const RareAlerts = require("./rare/alerts");
 const { SoldIndex } = require("./rare/sold-index");
@@ -1210,7 +1212,7 @@ app.get("/api/rare/lots", (req, res) => {
  */
 const SOLD_DEFAULT_WINDOW_MS = 730 * 24 * 3600 * 1000;
 
-const soldIndex = new SoldIndex(rareSources.map(({ scraper }) => scraper));
+const soldIndex = new SoldIndex(rareSources.map(({ scraper }) => scraper), { extraDirectoryFile: path.join(process.cwd(), "data", "rare", "model-directory-extra.json") });
 
 const dateParam = (value) => {
   const ms = Date.parse(String(value || ""));
@@ -1269,6 +1271,51 @@ app.post("/api/rare/sold/lots", (req, res) => {
  * источников. Остальные площадки из aggregator-approach.md сайт
  * показывает сам как «ещё не подключены», без записи здесь.
  */
+/*
+ * Заявки на модели (справочник покрывает не все): человек называет модель, которой нет, — заявка уходит администраторам,
+ * ему отвечаем «сообщим, как только появится информация». Просмотр и закрытие заявок — только с ключом RARE_ADMIN_KEY
+ * (переменная окружения службы); пока она не задана, админ-адреса отключены.
+ */
+const modelDirectoryExtraFile = path.join(process.cwd(), "data", "rare", "model-directory-extra.json");
+const modelRequests = new ModelRequests({
+  file: path.join(process.cwd(), "data", "rare", "model-requests.json"),
+  notify: text => rareAlerts.send(text),
+  extraDirectory: () => loadExtra(modelDirectoryExtraFile),
+  log: console.log,
+});
+
+const rareAdminOnly = (req, res, next) => {
+  const key = process.env.RARE_ADMIN_KEY;
+  if (!key)
+    return res.status(404).json({ success: false, message: "не найдено" });
+  if (req.get("x-admin-key") !== key)
+    return res.status(403).json({ success: false, message: "нет доступа" });
+  next();
+};
+
+/* «Что дорожает»: изменение за 12 месяцев по равным позициям внутри региона (регионы не смешиваются). */
+app.get("/api/rare/movement", (req, res) => {
+  const region = ["US", "CA", "GB", "EU", "AU", "JP", "OTHER"].includes(String(req.query.region)) ? String(req.query.region) : "US";
+  const limit = Math.min(30, Math.max(1, Number(req.query.limit) || 10));
+  res.json({ success: true, ...soldIndex.movement({ region, limit }) });
+});
+
+app.post("/api/rare/model-requests", async (req, res) => {
+  const result = await modelRequests.add({ query: req.body?.query, contact: req.body?.contact || null });
+  res.status(result.ok ? 200 : 400).json({ success: result.ok, ...result });
+});
+
+app.get("/api/rare/admin/model-requests", rareAdminOnly, (req, res) => {
+  res.json({ success: true, requests: modelRequests.list({ status: req.query.status ? String(req.query.status) : null }) });
+});
+
+app.post("/api/rare/admin/model-requests/:id/close", rareAdminOnly, (req, res) => {
+  const item = modelRequests.close(String(req.params.id), { status: req.body?.status, note: req.body?.note || null });
+  if (!item)
+    return res.status(404).json({ success: false, message: "заявка не найдена" });
+  res.json({ success: true, request: item });
+});
+
 app.get("/api/rare/sources/status", (req, res) => {
   res.json({ success: true, sources: rareSources.map(({ id, scraper }) => ({ id, ...scraper.readStatus() })) });
 });

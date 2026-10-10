@@ -238,7 +238,7 @@ const NOT_CAR_MAKES = new Set([
   "harley-davidson", "indian", "bsa", "norton", "mv", "ducati", "moto guzzi", "vincent", "husqvarna", "ktm", "vespa", "lambretta",
   "yamaha", "kawasaki", "aprilia", "piaggio", "laverda", "benelli", "matchless", "parilla", "magni", "dunstall", "terrot", "solex", "brough superior",
 ]);
-const NOT_CAR_TITLE = /\b(signs?|neon|illuminated|bicycles?|tricycle|trolley|jet engine|outboard|pedal car|mannequin|memorabilia|poster|jukebox|clock|tool chest|toolbox|seats for|wheels for|gas pump|petrol pump|motorcycle|scooter|moped|snowmobile|tractor|sidecar)\b/i;
+const NOT_CAR_TITLE = /\b(signs?|neon|illuminated|bicycles?|tricycle|trolley|jet engine|outboard|pedal car|mannequin|memorabilia|poster|jukebox|clock|tool chest|toolbox|seats for|wheels for|gas pump|petrol pump|motorcycle|scooter|moped|snowmobile|tractor|sidecar|ct ?70|z50a?|atc ?\d{2,3}|cb ?\d{3}|cbx|goldwing|trail ?\d{2,3}|mini trail)\b/i;
 const isNotCar = (lot) => {
   const make = String(lot?.make || "").trim().toLowerCase();
   return NOT_CAR_MAKES.has(make) || NOT_CAR_TITLE.test(String(lot?.title || ""));
