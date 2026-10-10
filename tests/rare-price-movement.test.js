@@ -77,3 +77,10 @@ test("the ranking lists the biggest risers and fallers of one region and counts 
   assert.equal(ranking.regions.find(region => region.id === "GB").positions, 0);
   assert.equal(ranking.rising[0].label, "Porsche 911 997.1");
 });
+
+test("a position whose two windows differ more than five times in size is not ranked, and cars outside the directory are ignored", () => {
+  const lopsided = computeMovement([...batch(120, 10, 60000), ...batch(20, 400, 50000)], resolve, { now: NOW });
+  assert.equal(lopsided[0].ranked, false);
+  const unlisted = computeMovement([...batch(25, 10, 60000), ...batch(25, 400, 50000)], lot => ({ family: "ATC", generation: null, listed: false }), { now: NOW });
+  assert.equal(unlisted.length, 0);
+});

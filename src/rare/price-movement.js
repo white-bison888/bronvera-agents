@@ -16,6 +16,7 @@ const { REGIONS, regionOf } = require("./regions");
 const MONTH_MS = 30.44 * 86400_000;
 const MIN_RANKED = 20;
 const MIN_SHOWN = 10;
+const MAX_WINDOW_RATIO = 5;
 
 const median = (values) => {
   const sorted = [...values].sort((a, b) => a - b);
@@ -48,7 +49,8 @@ const computeMovement = (lots, resolve, { now = Date.now(), months = 12, minRank
       continue;
     const { region } = regionOf(lot);
     const resolved = resolve(lot);
-    if (!region || !resolved.family)
+    // Только то, что есть в справочнике: автоматический разбор названий смешивает позиции и пропускает не-машины.
+    if (!region || !resolved.family || !resolved.listed)
       continue;
     const key = [region, lot.make, resolved.family, resolved.generation || "", lot.source].join("|");
     const group = groups.get(key) || { now: [], prev: [] };
@@ -73,7 +75,8 @@ const computeMovement = (lots, resolve, { now = Date.now(), months = 12, minRank
         medianNow, medianPrev, nNow: group.now.length, nPrev: group.prev.length,
         change: Math.round(((medianNow / medianPrev) - 1) * 1000) / 10, // проценты с десятой
         confidence: confidenceOf(strength),
-        ranked: strength >= minRanked,
+        // Если окна сильно несоразмерны (у BaT ранние месяцы собраны неполно), состав выборки мог измениться — в рейтинг не берём.
+        ranked: strength >= minRanked && Math.max(group.now.length, group.prev.length) / strength <= MAX_WINDOW_RATIO,
       });
     }
   }
