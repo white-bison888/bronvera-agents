@@ -10,12 +10,27 @@ const path = require("path");
  * на BaT, лот пропадает из выдачи площадки в течение суток и Stats теряет
  * его безвозвратно.
  */
+/*
+ * 07.10.2026 архив BaT (71 511 лотов) был потерян: перезапуск службы попал на
+ * запись файла, он остался обрезанным, чтение молча вернуло «пусто», и суточный
+ * заход записал архив с нуля. Поэтому: нет файла — архив пуст (первый запуск);
+ * файл есть, но не читается — это ошибка, а не пустой архив.
+ */
 const loadSoldArchive = (file) => {
+  let text;
   try {
-    return JSON.parse(fs.readFileSync(file, "utf8"));
+    text = fs.readFileSync(file, "utf8");
   }
-  catch {
-    return {};
+  catch (error) {
+    if (error.code === "ENOENT")
+      return {};
+    throw error;
+  }
+  try {
+    return JSON.parse(text);
+  }
+  catch (error) {
+    throw new Error(`Архив ${file} повреждён (${text.length} знаков): ${error.message}. Не перезаписываю — восстановите файл из копии.`);
   }
 };
 
@@ -41,10 +56,32 @@ const readSoldArchiveCached = (file) => {
   }
 };
 
-const saveSoldArchive = (file, archive) => {
+/*
+ * Запись через временный файл и переименование: файл на месте всегда целый —
+ * либо прежний, либо новый, обрезанным он не останется. Архив только копится,
+ * поэтому резкое уменьшение (вдвое и больше у файла крупнее SHRINK_GUARD_BYTES)
+ * считаем сбоем и не записываем; разовая чистка передаёт allowShrink.
+ */
+const SHRINK_GUARD_BYTES = 1024 * 1024;
+
+const saveSoldArchive = (file, archive, { allowShrink = false } = {}) => {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   // Без отступов: у BaT десятки тысяч лотов, красивое форматирование удваивало бы файл.
-  fs.writeFileSync(file, JSON.stringify(archive));
+  const text = JSON.stringify(archive);
+
+  if (!allowShrink) {
+    let before = 0;
+    try {
+      before = fs.statSync(file).size;
+    }
+    catch {}
+    if (before > SHRINK_GUARD_BYTES && Buffer.byteLength(text) < before / 2)
+      throw new Error(`Архив ${file} уменьшился бы с ${before} до ${Buffer.byteLength(text)} байт — не записываю.`);
+  }
+
+  const tmp = `${file}.tmp-${process.pid}`;
+  fs.writeFileSync(tmp, text);
+  fs.renameSync(tmp, file);
 };
 
 /* Год — первый найденный токен 19xx/20xx в заголовке, как и у guessMake/guessModel. */
