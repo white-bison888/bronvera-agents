@@ -2,6 +2,7 @@ const fs = require("fs");
 const path = require("path");
 const { guessMake, guessModel } = require("./title-parser");
 const { runFinishInChild } = require("./finish-new-sold");
+const { normalizeCountry } = require("./regions");
 const { loadSoldArchive, readSoldArchiveCached, saveSoldArchive, soldArchiveLocked, yearFromTitle } = require("./sold-archive");
 const { FxRates, reconvertArchive } = require("./fx");
 const { parseMileageText, transmissionKind } = require("./sold-fields");
@@ -80,7 +81,7 @@ const statusOf = (closesAt, now) => {
 };
 
 const LIVE_FIELDS = "slug,title,mainImageUrl,currencyCode,currentBid,dtStageEndsUTC,productMake,modelName";
-const SOLD_FIELDS = "slug,title,mainImageUrl,currencyCode,priceSold,isSoldPriceHidden,productMake,productYear,modelName,dtSoldUTC,features,powertrainName,variantName,generationName,driveSide";
+const SOLD_FIELDS = "slug,title,mainImageUrl,currencyCode,priceSold,isSoldPriceHidden,productMake,productYear,modelName,dtSoldUTC,features,powertrainName,variantName,generationName,driveSide,countryCode,location";
 
 const toRareLot = (doc, now) => {
   const make = doc.productMake || guessMake(doc.title);
@@ -138,6 +139,8 @@ const toSoldLot = (doc) => {
     year: Number.isFinite(year) && year > 1800 ? year : yearFromTitle(doc.title),
     source: "Collecting Cars",
     sourceUrl: `https://collectingcars.com/for-sale/${doc.slug}`,
+    ...(normalizeCountry(doc.countryCode) ? { country: normalizeCountry(doc.countryCode) } : {}),
+    ...(doc.location ? { place: doc.location } : {}),
     soldAt,
     salePrice: null, // подставляется по курсу на день продажи
     salePriceLocal: doc.priceSold,

@@ -2,6 +2,7 @@ const fs = require("fs");
 const path = require("path");
 const { guessMake, guessModel } = require("./title-parser");
 const { runFinishInChild } = require("./finish-new-sold");
+const { normalizeCountry } = require("./regions");
 const { loadSoldArchive, readSoldArchiveCached, saveSoldArchive, soldArchiveLocked, yearFromTitle } = require("./sold-archive");
 const { FxRates, reconvertArchive } = require("./fx");
 const { bodyStyleOf, parseVehicleAttributes } = require("./sold-attrs");
@@ -99,7 +100,7 @@ const parseSoldValue = (value) => {
   return Number.isFinite(amount) && amount > 0 ? { amount, currency } : null;
 };
 
-const toSoldLot = (item, endDate, code) => {
+const toSoldLot = (item, endDate, code, country = null) => {
   if (item.valueType !== "Sold" || !item.sold || !endDate)
     return null;
 
@@ -124,6 +125,7 @@ const toSoldLot = (item, endDate, code) => {
     salePriceLocal: price.amount,
     currency: price.currency,
     auctionCode: code,
+    ...(country ? { country } : {}),
     sold: true,
     estimateMin: null,
     estimateMax: null,
@@ -288,8 +290,12 @@ class RmSothebysScraper {
     return [...codes];
   }
 
-  // Дата аукциона — из разметки schema.org Event на его собственной странице, не с каждого лота.
+  // Дата и страна аукциона — из разметки schema.org Event на его собственной странице, не с каждого лота.
   async fetchAuctionClosesAt(code) {
+    return (await this.fetchAuctionInfo(code)).closesAt;
+  }
+
+  async fetchAuctionInfo(code) {
     const response = await this.fetchImpl(`${BASE_URL}/auctions/${code}/`, {
       headers: { "User-Agent": "Mozilla/5.0 (compatible; BRONVERA-Rare/1.0)" },
     });
@@ -299,10 +305,11 @@ class RmSothebysScraper {
 
     const html = await response.text();
     const match = html.match(/"@type":"\s*Event"[\s\S]{0,500}?"endDate":"(\d{4}-\d{2}-\d{2})"/);
+    const country = normalizeCountry((html.match(/"@type":"\s*Event"[\s\S]{0,1500}?"addressCountry":"([^"]+)"/) || [])[1]);
     if (!match)
-      return null;
+      return { closesAt: null, country };
     // Только дата, без времени суток — считаем аукцион «не закрытым» до конца этого дня, не с полуночи.
-    return new Date(`${match[1]}T23:59:59Z`).toISOString();
+    return { closesAt: new Date(`${match[1]}T23:59:59Z`).toISOString(), country };
   }
 
   async fetchAuctionCarLots(code) {
@@ -455,13 +462,13 @@ class RmSothebysScraper {
     for (const code of pending) {
       try {
         const items = await this.fetchAuctionCarLots(code);
-        const closesAt = await this.fetchAuctionClosesAt(code); // и у аукциона без машин — иначе пустой ответ «закрыл» бы свежие торги навсегда
+        const { closesAt, country } = await this.fetchAuctionInfo(code); // и у аукциона без машин — иначе пустой ответ «закрыл» бы свежие торги навсегда
         const endDate = closesAt ? closesAt.slice(0, 10) : null;
 
         let skippedForFx = 0;
 
         for (const item of items) {
-          const soldLot = toSoldLot(item, endDate, code);
+          const soldLot = toSoldLot(item, endDate, code, country);
           if (!soldLot || archive[soldLot.id])
             continue;
           try {
@@ -481,7 +488,7 @@ class RmSothebysScraper {
         if (skippedForFx > 0)
           continue;
 
-        auctions[code] = { endDate, checkedAt: new Date(now).toISOString() };
+        auctions[code] = { endDate, country, checkedAt: new Date(now).toISOString() };
       }
       catch (error) {
         this.log(`BRONVERA Rare: не собрал итоги RM Sotheby's ${code}: ${error.message}`);

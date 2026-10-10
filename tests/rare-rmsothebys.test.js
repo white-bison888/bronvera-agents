@@ -406,3 +406,11 @@ test("updateSoldArchive stops retrying an auction whose own page does not exist 
 
   fs.rmSync(dataDir, { recursive: true, force: true });
 });
+
+test("an auction page names its country in the Event markup, which becomes the sale region", async () => {
+  const html = '<script type="application/ld+json">{"@type":"Event","name":"Monterey","startDate":"2026-08-14","endDate":"2026-08-15","location":{"@type":"Place","address":{"@type":"PostalAddress","addressLocality":"Monterey","addressCountry":"US"}}}</script>';
+  const scraper = new RmSothebysScraper({ fx: fakeFx, dataDir: tmpDir(), fetchImpl: async () => ({ ok: true, text: async () => html }), log: () => {} });
+  const info = await scraper.fetchAuctionInfo("mo26");
+  assert.equal(info.country, "US");
+  assert.equal(info.closesAt, "2026-08-15T23:59:59.000Z");
+});

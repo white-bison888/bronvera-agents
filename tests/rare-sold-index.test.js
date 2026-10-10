@@ -44,7 +44,7 @@ test("points() returns compact rows with dictionaries instead of repeated string
 
   const { fields, dict, rows } = index.points();
 
-  assert.deepEqual(fields, ["id", "soldAt", "salePrice", "source", "make", "model", "year", "mileage", "transmission", "color", "sold", "body", "engine", "drive", "trim", "generation", "resale", "flags"]);
+  assert.deepEqual(fields, ["id", "soldAt", "salePrice", "source", "make", "model", "year", "mileage", "transmission", "color", "sold", "body", "engine", "drive", "trim", "generation", "resale", "flags", "region"]);
   assert.deepEqual(dict.model.sort(), ["911", "Cayman"]);
   assert.equal(rows.length, 2);
 
@@ -354,4 +354,34 @@ test("signs, bicycles, motorcycles and boats stay out of the index, and lots wit
   assert.deepEqual(index.points().rows.map(row => row[0]).sort(), ["car", "noyear"]);
   assert.equal(index.lot("sign"), null);
   assert.ok(!(index.comparables("car")?.lots || []).some(item => item.id === "noyear"));
+});
+
+test("points carry the sale region (country, or the currency when the country is unknown), and comparables keep other markets for the end with a label", () => {
+  const dir = tmpDir();
+  const lots = [
+    lot("me", { vin: "WP0CD2A94RS700001", country: "US", salePrice: 100000 }),
+    lot("us1", { country: "US", salePrice: 98000, soldAt: "2026-03-09T00:00:00.000Z" }),
+    lot("uk1", { country: "GB", currency: "GBP", salePrice: 150000, soldAt: "2026-03-08T00:00:00.000Z" }),
+    lot("eu1", { currency: "EUR", salePrice: 140000, soldAt: "2026-03-07T00:00:00.000Z" }), // страны нет — по валюте: Европа
+    lot("nocur", { salePrice: 90000, soldAt: "2026-03-06T00:00:00.000Z" }), // ни страны, ни валюты — доллары, США по валюте
+  ];
+  const index = new SoldIndex([fakeScraper(dir, "a", lots)]);
+  const { fields, dict, rows } = index.points();
+  const regionOfRow = id => dict.region[rows.find(row => row[0] === id)[fields.indexOf("region")]];
+  assert.equal(regionOfRow("us1"), "US");
+  assert.equal(regionOfRow("uk1"), "GB");
+  assert.equal(regionOfRow("eu1"), "EU");
+  assert.equal(regionOfRow("nocur"), "US");
+
+  const full = index.lotsByIds(["uk1", "eu1"]);
+  assert.equal(full[0].region, "GB");
+  assert.equal(full[0].regionBasis, "country");
+  assert.equal(full[1].regionBasis, "currency");
+
+  const comps = index.comparables("me");
+  const byId = Object.fromEntries(comps.lots.map(item => [item.id, item]));
+  assert.equal(byId.us1.similarity, "exact");
+  assert.equal(byId.uk1.similarity, "near");
+  assert.ok(byId.uk1.differs.includes("рынок: Великобритания"));
+  assert.ok(byId.eu1.differs.includes("рынок: Европа"));
 });

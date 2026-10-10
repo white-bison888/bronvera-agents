@@ -2,6 +2,7 @@ const fs = require("fs");
 const path = require("path");
 const { guessMake, guessModel, canonicalMake } = require("./title-parser");
 const { runFinishInChild } = require("./finish-new-sold");
+const { normalizeCountry } = require("./regions");
 const { loadSoldArchive, readSoldArchiveCached, saveSoldArchive, soldArchiveLocked, yearFromTitle } = require("./sold-archive");
 const { FxRates, reconvertArchive } = require("./fx");
 const { bodyStyleOf, parseVehicleAttributes } = require("./sold-attrs");
@@ -187,15 +188,17 @@ const parseGoodingLotPage = (text, lot = {}) => {
     return {};
   const item = node.item || {};
   const chassis = classifyVin(item.chassis);
+  const country = normalizeCountry(node.auction?.location?.address?.addressCountry);
   const prose = [...(item.highlights || []), ...(item.specifications || []), item.note, ...textValues(node.description)].filter(Boolean).join(". ");
   if (!prose)
-    return chassis;
+    return { ...chassis, ...(country ? { country } : {}) };
   const found = parseRmText(prose);
   const attrs = parseVehicleAttributes(lot.title, prose);
   const bodyStyle = bodyStyleOf(lot.title);
   delete attrs.bodyStyle;
   return {
     ...chassis,
+    ...(country ? { country } : {}),
     mileage: found.mileage,
     exteriorColor: found.exteriorColor,
     colorGroup: colorGroupOf(found.exteriorColor),

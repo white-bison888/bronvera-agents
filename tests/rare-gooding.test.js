@@ -159,3 +159,8 @@ test("run() lists upcoming auction lots with a USD estimate and the auction end 
   assert.equal(scraper.readStatus().ok, true);
   fs.rmSync(dataDir, { recursive: true, force: true });
 });
+
+test("a lot page names the country of the auction, which becomes the sale region", () => {
+  const patch = GoodingScraper.parseGoodingLotPage(JSON.stringify(lotNode({ auction: { currency: "EUR", location: { address: { addressCountry: "FR" } } } })), { title: "1970 Citroën SM" });
+  assert.equal(patch.country, "FR");
+});

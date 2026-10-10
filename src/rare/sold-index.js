@@ -1,6 +1,8 @@
 const fs = require("fs");
 const { engineLabel, flagsOf, isLowMileage, isNotCar } = require("./sold-attrs");
 const { buildFamilyResolver } = require("./model-family");
+const { REGIONS, regionOf } = require("./regions");
+const REGION_LABELS = Object.fromEntries(REGIONS.map(region => [region.id, region.label]));
 
 /*
  * Индекс проданных лотов для вкладки Stats (02.10.2026). Архивов уже
@@ -22,10 +24,16 @@ const { buildFamilyResolver } = require("./model-family");
  * остаток названия — комплектация — идёт отдельной колонкой trim (см.
  * model-family.js). Новые колонки только в конце.
  */
-const POINT_FIELDS = ["id", "soldAt", "salePrice", "source", "make", "model", "year", "mileage", "transmission", "color", "sold", "body", "engine", "drive", "trim", "generation", "resale", "flags"];
+const POINT_FIELDS = ["id", "soldAt", "salePrice", "source", "make", "model", "year", "mileage", "transmission", "color", "sold", "body", "engine", "drive", "trim", "generation", "resale", "flags", "region"];
 const TRANSMISSION_CODES = { manual: 1, automatic: 2 };
 
 /* Всё, что страница ждёт от лота, — с пустыми значениями по умолчанию (старые записи архива их не имеют). */
+/* Регион продажи: страна лота (или по валюте, если страны нет) и группа — США / Канада / Великобритания / Европа / Австралия и Н. Зеландия / Япония / другие. */
+const regionFields = (lot) => {
+  const { country, region, basis } = regionOf(lot);
+  return { country, region, regionBasis: basis };
+};
+
 const fullLot = lot => ({
   estimateMin: null,
   estimateMax: null,
@@ -40,6 +48,7 @@ const fullLot = lot => ({
   model: null,
   sold: null,
   ...lot,
+  ...regionFields(lot),
   lowMileage: isLowMileage(lot), // относительный: считается по пробегу и возрасту
 });
 
@@ -232,8 +241,8 @@ class SoldIndex {
   points({ since = null, until = null } = {}) {
     this.refresh();
 
-    const dict = { source: [], make: [], model: [], color: [], body: [], engine: [], drive: [], trim: [], generation: [] };
-    const lookup = { source: new Map(), make: new Map(), model: new Map(), color: new Map(), body: new Map(), engine: new Map(), drive: new Map(), trim: new Map(), generation: new Map() };
+    const dict = { source: [], make: [], model: [], color: [], body: [], engine: [], drive: [], trim: [], generation: [], region: [] };
+    const lookup = { source: new Map(), make: new Map(), model: new Map(), color: new Map(), body: new Map(), engine: new Map(), drive: new Map(), trim: new Map(), generation: new Map(), region: new Map() };
     const code = (kind, value) => {
       if (value === null || value === undefined || value === "")
         return -1;
@@ -270,6 +279,7 @@ class SoldIndex {
         code("generation", lot.generation || generation),
         this.resaleOf.has(lot.id) ? this.resaleOf.get(lot.id) : -1,
         flagMask(lot),
+        code("region", regionOf(lot).region),
       ]);
     }
 
@@ -298,6 +308,7 @@ class SoldIndex {
     const generationOf = other => other.generation || this.resolveFamily(other).generation;
     const myFlags = new Set(lot.flags || []);
     const myCondition = conditionOf(lot);
+    const myRegion = regionOf(lot).region;
 
     // Та же марка и линейка. Доработанные (рестомод, реплика) с серийными не смешиваем никогда; особая версия
     // отличается от обычной сильно, но в «ближайшие» попасть может — с пометкой, если «таких же» мало.
@@ -353,6 +364,12 @@ class SoldIndex {
         distance += 4;
       }
 
+      // Рынки не смешиваем: цена в США и в Европе — разные цены. Другой регион уходит в «ближайшие» с пометкой.
+      if (myRegion && regionOf(other).region && regionOf(other).region !== myRegion) {
+        distance += 30;
+        exact = false;
+        differs.push(`рынок: ${REGION_LABELS[regionOf(other).region]}`);
+      }
       if (myFlags.has("special") !== hasFlag(other, "special")) {
         distance += 15;
         exact = false;

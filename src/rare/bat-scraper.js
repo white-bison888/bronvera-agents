@@ -5,6 +5,7 @@ const { guessMake, guessModel } = require("./title-parser");
 const { runFinishInChild } = require("./finish-new-sold");
 const { loadSoldArchive, readSoldArchiveCached, saveSoldArchive, soldArchiveLocked, yearFromTitle } = require("./sold-archive");
 const { FxRates } = require("./fx");
+const { normalizeCountry } = require("./regions");
 const { classifyVin, colorGroupOf, decodeEntities: decodeBatEntities, parseBatExcerpt, transmissionKind } = require("./sold-fields");
 const { fillAttributes, parseVehicleAttributes } = require("./sold-attrs");
 const { enrichFromPages } = require("./sold-pages");
@@ -189,6 +190,7 @@ const toRareLot = (item, now) => {
     model: guessModel(title, make),
     source: "Bring a Trailer",
     sourceUrl: item.url,
+    ...(normalizeCountry(item.country_code) ? { country: normalizeCountry(item.country_code) } : {}),
     mileage: null, // подставляется из lot-details.json после первого разбора страницы лота
     transmission: null,
     vin: null,
@@ -231,7 +233,7 @@ const COMPLETED_PER_PAGE = 60;
 const COMPLETED_MAX_PAGE = 165;
 const REQUEST_GAP_MS = 1500;
 // Поля, которые можно дописать лоту, уже лежащему в архиве, не затирая известное.
-const ENRICH_KEYS = ["mileage", "transmission", "transmissionKind", "exteriorColor", "colorGroup", "bodyStyle", "cylinders", "engineLayout", "displacement", "aspiration", "drivetrain", "steering", "flags"];
+const ENRICH_KEYS = ["country", "mileage", "transmission", "transmissionKind", "exteriorColor", "colorGroup", "bodyStyle", "cylinders", "engineLayout", "displacement", "aspiration", "drivetrain", "steering", "flags"];
 const SLOW_DOWN_WAIT_MS = 30_000;
 
 // Мотоциклы, скутеры и прочее не-авто попадают в тот же список без категорий — отсекаем по названию.
@@ -271,6 +273,7 @@ const toCompletedSoldLot = (item) => {
     salePrice: result.currency === "USD" ? result.price : null, // для других валют — по курсу на день продажи, см. updateSoldFromCompleted
     ...(result.currency === "USD" ? {} : { salePriceLocal: result.price, currency: result.currency }),
     sold: result.sold,
+    ...(normalizeCountry(item.country_code) ? { country: normalizeCountry(item.country_code) } : {}),
     mileage: details.mileage,
     transmission: describeTransmission(details.transmissionRaw),
     transmissionKind: transmissionKind(details.transmissionRaw),
