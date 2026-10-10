@@ -96,7 +96,7 @@ const prefilterReason = (lot, { now, config, rates = defaultRates }) => {
   if (expected === null)
     return "нет прогноза bid.cars";
 
-  const ceiling = Math.max(...config.tiers.map(tier => tier.maxExpectedPriceUsd));
+  const ceiling = Math.max(...config.tiers.map(tier => tier.maxExpectedPriceUsd).filter(Number.isFinite));
 
   if (expected > ceiling)
     return `прогноз выше $${ceiling}`;
@@ -128,6 +128,11 @@ const evaluateLot = (lot, { market, photoAssessment = null, rates = {} }) => {
     result,
     expectedPriceUsd: result.forecast.expectedUsd,
     profitAtExpectedUsd: result.profit.atExpectedUsd,
+    // Fast Buy: прибыль при цене выкупа и запас на ремонт при ней же.
+    profitAtFastBuyUsd: result.profit.atFastBuyUsd ?? null,
+    repairRoomAtFastBuyUsd: Number.isFinite(result.profit.atFastBuyUsd)
+      ? Math.round(result.profit.atFastBuyUsd + result.breakdown.repairCostUsd - minProfitUsd)
+      : null,
     repairCostUsd: result.breakdown.repairCostUsd,
     repairSource: result.repairCostSource,
     damageType: result.damageType,
@@ -143,17 +148,42 @@ const evaluateLot = (lot, { market, photoAssessment = null, rates = {} }) => {
  * так мелкие повреждения поднимаются выше лобовых при той же цене.
  * При равной прибыли выше тот, у кого больше запас на ремонт.
  */
-const rankTiers = (evaluated, config) => config.tiers.map((tier) => {
-  const candidates = evaluated
-    .filter(item => item.expectedPriceUsd <= tier.maxExpectedPriceUsd)
-    .filter(item => item.repairRoomUsd >= config.minRepairRoomUsd)
-    .sort((a, b) => (b.profitAtExpectedUsd - a.profitAtExpectedUsd)
-      || (b.repairRoomUsd - a.repairRoomUsd))
+const rankTiers = (evaluated, config, now = new Date()) => config.tiers.map((tier) => {
+  const pool = tier.fastBuy
+    ? evaluated
+      // Выкуп возможен, пока открыто окно: не раньше чем через часы, нужные на разбор фото.
+      .filter(item => item.lot.saleType === "fastBuy" && fastBuyWindowOpen(item.lot, now, config))
+      .filter(item => item.repairRoomAtFastBuyUsd >= config.minRepairRoomUsd)
+      .sort((a, b) => (b.profitAtFastBuyUsd - a.profitAtFastBuyUsd)
+        || (b.repairRoomAtFastBuyUsd - a.repairRoomAtFastBuyUsd))
+    : evaluated
+      .filter(item => item.expectedPriceUsd <= tier.maxExpectedPriceUsd)
+      .filter(item => item.repairRoomUsd >= config.minRepairRoomUsd)
+      // Лоты с выкупом при равной прибыли выше: их можно взять без торгов.
+      .sort((a, b) => (b.profitAtExpectedUsd - a.profitAtExpectedUsd)
+        || (b.repairRoomUsd - a.repairRoomUsd));
+
+  const candidates = pool
     .slice(0, tier.maxCandidates)
     .map((item, index) => ({ ...item, rank: index + 1 }));
 
   return { ...tier, candidates };
 });
+
+/*
+ * Окно выкупа открыто, если закрывается не раньше чем через минимум часов,
+ * нужных на разбор фото. Время закрытия известно из выдачи; если его нет,
+ * ориентируемся на дату торгов — окно не может быть дольше.
+ */
+const fastBuyWindowOpen = (lot, now, config) => {
+  const closeAt = lot.buyNowCloseAt || lot.saleDate;
+  const closeTime = closeAt ? new Date(closeAt).getTime() : NaN;
+
+  if (!Number.isFinite(closeTime))
+    return false;
+
+  return (closeTime - now.getTime()) / HOUR_MS >= config.minHoursBeforeAuction;
+};
 
 const countBy = (items) => {
   const counts = {};
@@ -170,6 +200,7 @@ module.exports = {
   countBy,
   evaluateLot,
   expectedPriceUsd,
+  fastBuyWindowOpen,
   minskDay,
   minskHour,
   prefilterReason,

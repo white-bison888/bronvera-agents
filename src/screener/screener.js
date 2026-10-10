@@ -7,6 +7,8 @@ const defaultQueue = require("../photos/queue");
 const { calculateMaxBid } = require("../economics/max-bid");
 const { marketSnapshot } = require("../market/minsk-prices");
 const { fetchSearchSlice, mapSearchItem } = require("../providers/bidcars-search-api");
+const { getVinInfo } = require("../providers/tesla-vin");
+const { trimHintOf, vinFactsOf } = require("../economics/destination-deals");
 const { withRun } = require("../costs/ledger");
 const { checkSeller } = require("../providers/lot-requirements");
 const { noticeFields } = require("../providers/lot-notices");
@@ -237,7 +239,19 @@ class DailyScreener {
    * в реестр: упади скан на пятой части, первые четыре не пропадут.
    */
   async scanCatalog(now) {
-    const pending = this.config.slices.map(slice => ({ slice, attempts: 0 }));
+    /*
+     * Fast Buy — в приоритете (07.10): те же части каталога сначала по
+     * выборке лотов с открытым выкупом, потом обычные открытые торги.
+     * Если скан оборвётся посреди, Fast Buy уже будет в реестре.
+     */
+    const regular = this.config.slices.map(slice => ({ slice, attempts: 0 }));
+    const fastBuy = this.config.scanFastBuyFirst
+      ? this.config.slices.map(slice => ({
+        slice: { ...slice, label: `Fast Buy · ${slice.label}`, status: "Fast-buy" },
+        attempts: 0,
+      }))
+      : [];
+    const pending = [...fastBuy, ...regular];
     let requests = 0;
 
     for (let round = 0; round < this.config.sliceAttempts && pending.some(p => !p.done); round += 1) {
@@ -256,6 +270,7 @@ class DailyScreener {
           models: item.slice.models,
           yearFrom: item.slice.yearFrom,
           yearTo: item.slice.yearTo,
+          status: item.slice.status,
         });
 
         try {
@@ -426,6 +441,9 @@ class DailyScreener {
         model: lot.model,
         year: lot.year,
         mileage: lot.mileage,
+        // VIN нужен, чтобы отличить Plaid от обычной Model S/X при подборе аналогов.
+        vin: lot.vin,
+        trimHint: trimHintOf(getVinInfo().peek(lot.vin)),
       });
 
       if (!market.marketValueUsd) {
@@ -434,7 +452,7 @@ class DailyScreener {
       }
 
       const photoAssessment = this.photoAssessor?.getCached?.(lot.lotNumber) || null;
-      const evaluation = evaluateLot(lot, { market, photoAssessment });
+      const evaluation = evaluateLot({ ...lot, ...vinFactsOf(getVinInfo().peek(lot.vin)) }, { market, photoAssessment });
 
       if (evaluation.repairRoomUsd === null) {
         excluded.push("сделку не посчитать");
@@ -449,7 +467,7 @@ class DailyScreener {
       evaluated.push({ lot, market, photoAssessment, ...evaluation });
     }
 
-    const tiers = rankTiers(evaluated, this.config);
+    const tiers = rankTiers(evaluated, this.config, now);
 
     excluded.push(...evaluated
       .filter(item => item.repairRoomUsd < this.config.minRepairRoomUsd)
@@ -525,6 +543,11 @@ class DailyScreener {
       location: lot.location || null,
       saleDate: lot.saleDate || null,
       currentBidUsd: lot.currentBid ?? null,
+      saleType: lot.saleType || "auction",
+      buyNowUsd: lot.buyNowUsd ?? null,
+      buyNowCloseAt: lot.buyNowCloseAt || null,
+      profitAtFastBuyUsd: item.profitAtFastBuyUsd ?? null,
+      repairRoomAtFastBuyUsd: item.repairRoomAtFastBuyUsd ?? null,
       forecast: result.forecast,
       expectedPriceUsd: item.expectedPriceUsd,
       marketValueUsd: market.marketValueUsd,
@@ -557,8 +580,15 @@ class DailyScreener {
     const day = minskDay(now);
     const history = this.history.readAll();
 
+    // Fast Buy — первыми (окно выкупа закрывается раньше торгов), дальше по времени торгов.
+    const closesAt = entry => String(
+      entry.lot.saleType === "fastBuy"
+        ? entry.lot.buyNowCloseAt || entry.lot.saleDate || ""
+        : entry.lot.saleDate || ""
+    );
     const ordered = [...entries].sort((a, b) =>
-      String(a.lot.saleDate || "").localeCompare(String(b.lot.saleDate || "")));
+      (Number(b.lot.saleType === "fastBuy") - Number(a.lot.saleType === "fastBuy"))
+      || closesAt(a).localeCompare(closesAt(b)));
 
     const records = [];
     const toQueue = [];

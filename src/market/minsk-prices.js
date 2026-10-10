@@ -1,4 +1,5 @@
 const fs = require("fs");
+const { getVinInfo, isVin } = require("../providers/tesla-vin");
 const path = require("path");
 
 /*
@@ -27,7 +28,7 @@ const MILEAGE_OVER_ANALOGS = 1.25;
 
 // Поднимается, когда меняются правила подбора: старые результаты кэша не годятся.
 // 4 — в результате появился полный список объявлений со ссылками (15.09).
-const RULES_VERSION = 4;
+const RULES_VERSION = 5;
 
 const USER_AGENT
   = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
@@ -364,6 +365,14 @@ class MinskMarketPrices {
     const http = options.http || new HttpClient(options);
 
     this.sources = options.sources || [new KufarSource(http), new OnlinerSource(http)];
+    // Другой рынок (Польша) — те же правила подбора аналогов, свои подписи и фильтр мусорных объявлений.
+    this.region = {
+      priceBasis: options.priceBasis || "медиана цен объявлений исправных аналогов по всей Беларуси",
+      notes: options.notes || [ABW_NOTE],
+      junkPattern: options.junkPattern || JUNK_PATTERN,
+      label: options.regionLabel || "Беларуси",
+    };
+    this.vinInfo = options.vinInfo || getVinInfo();
     this.cache = this.readCache();
   }
 
@@ -381,7 +390,7 @@ class MinskMarketPrices {
   }
 
   // Пробег округляем до 10 тыс. км: соседние лоты одной модели делят одну выборку.
-  static cacheKey(vehicle) {
+  static cacheKey(vehicle, variant = null) {
     const km = mileageKm(vehicle);
 
     return [
@@ -389,7 +398,35 @@ class MinskMarketPrices {
       normalizeName(vehicle.model),
       vehicle.year,
       km === null ? "?" : Math.round(km / 10000),
+      // Plaid и обычная Model S/X — разные цены, кэш у них раздельный.
+      ...(variant ? [variant] : []),
     ].join("|");
+  }
+
+  /*
+   * Plaid или обычная Model S/X по VIN из кэша расшифровок. Без VIN или без
+   * расшифровки — null: считаем как раньше, по модели и году.
+   */
+  variantOf(vehicle) {
+    // Комплектация из VIN («TRX»): аналоги берём с ней, иначе цена пикапа считается по всем версиям сразу.
+    const trim = MinskMarketPrices.trimHint(vehicle);
+
+    if (trim)
+      return `trim:${trim}`;
+
+    if (!/model\s*[sx]\b/i.test(String(vehicle.model || "")) || !isVin(vehicle.vin))
+      return null;
+
+    const info = this.vinInfo.peek(vehicle.vin);
+
+    return info && info.ok ? (info.plaid ? "plaid" : "std") : null;
+  }
+
+  // Одно слово из VIN-комплектации; «Big Horn, Lone Star» и прочие списки не подсказка.
+  static trimHint(vehicle) {
+    const trim = String(vehicle.trimHint || "").trim().toLowerCase();
+
+    return /^[a-z0-9-]{2,12}$/.test(trim) && !/^(base|sport|se|le|xle|sel|lx|ex|sl|sv|s|gt)$/.test(trim) ? trim : null;
   }
 
   // Что лежит в кэше для машины, без запроса к площадкам и без учёта срока.
@@ -397,7 +434,7 @@ class MinskMarketPrices {
     if (!vehicle || !vehicle.make || !vehicle.model || !Number.isInteger(Number(vehicle.year)))
       return null;
 
-    return this.cache[MinskMarketPrices.cacheKey({ ...vehicle, year: Number(vehicle.year) })] || null;
+    return this.cache[MinskMarketPrices.cacheKey({ ...vehicle, year: Number(vehicle.year) }, this.variantOf(vehicle))] || null;
   }
 
   async lookup(vehicle) {
@@ -413,14 +450,19 @@ class MinskMarketPrices {
       };
     }
 
-    const key = MinskMarketPrices.cacheKey(vehicle);
+    // Plaid от обычной S/X отличает только VIN: расшифровываем до подбора аналогов.
+    if (/model\s*[sx]\b/i.test(String(vehicle.model || "")) && isVin(vehicle.vin))
+      await this.vinInfo.ensure([vehicle.vin]);
+
+    const variant = this.variantOf(vehicle);
+    const key = MinskMarketPrices.cacheKey(vehicle, variant);
     const cached = this.cache[key];
 
     if (cached && cached.rulesVersion === RULES_VERSION
       && Date.now() - Date.parse(cached.fetchedAt) <= this.ttlMs)
       return { lotNumber, ...cached, cached: true };
 
-    const result = await this.collect(vehicle, year);
+    const result = await this.collect(vehicle, year, variant);
 
     // Сбой площадки не запоминаем: через минуту она может ответить.
     if (!result.errors.length) {
@@ -431,7 +473,7 @@ class MinskMarketPrices {
     return { lotNumber, ...result, cached: false };
   }
 
-  async collect(vehicle, year) {
+  async collect(vehicle, year, variant = null) {
     const lotKm = mileageKm(vehicle);
     const errors = [];
     const matchedModels = {};
@@ -455,12 +497,12 @@ class MinskMarketPrices {
       status: "ok",
       marketValueUsd: null,
       currency: "USD",
-      priceBasis: "медиана цен объявлений исправных аналогов по всей Беларуси",
+      priceBasis: this.region.priceBasis,
       sources: this.sources.map(s => s.name),
       matchedModels,
       lot: { make: vehicle.make, model: vehicle.model, year, mileageKm: lotKm },
       errors,
-      notes: [ABW_NOTE],
+      notes: this.region.notes,
       fetchedAt: new Date().toISOString(),
       rulesVersion: RULES_VERSION,
     };
@@ -480,9 +522,45 @@ class MinskMarketPrices {
 
     listings = listings.filter(l => l.priceUsd >= 1000 && l.year);
 
-    const clean = listings.filter(l => !JUNK_PATTERN.test(l.title));
+    const clean = listings.filter(l => !this.region.junkPattern.test(l.title));
     const junk = listings.length - clean.length;
-    const unique = dropDuplicates(clean);
+    let unique = dropDuplicates(clean);
+
+    /*
+     * Plaid (07.10): в названиях объявлений его почти не пишут, зато у части
+     * объявлений есть VIN. Plaid-лот сравниваем только с известными Plaid,
+     * обычный — со всеми, кроме известных Plaid. Остальное остаётся как было.
+     */
+    let plaidNote = null;
+
+    if (variant && variant.startsWith("trim:")) {
+      const hint = variant.slice(5);
+      const same = unique.filter(l => normalizeName(l.title).includes(normalizeName(hint)));
+
+      // Аналогов с такой комплектацией хватает — берём только их; нет — оставляем все и честно помечаем.
+      plaidNote = { trimHint: hint, listingsBefore: unique.length, kept: same.length, fellBack: same.length < MIN_ANALOGS };
+
+      if (!plaidNote.fellBack)
+        unique = same;
+    }
+    else if (variant) {
+      await this.vinInfo.ensure(unique.map(l => l.vin).filter(isVin));
+
+      const isPlaid = (l) => {
+        if (/plaid|плейд|плэйд/i.test(l.title))
+          return true;
+
+        const info = isVin(l.vin) ? this.vinInfo.peek(l.vin) : null;
+
+        return info && info.ok ? info.plaid : null;
+      };
+
+      const known = unique.filter(l => isPlaid(l) === true).length;
+      const before = unique.length;
+
+      unique = unique.filter(l => (variant === "plaid" ? isPlaid(l) === true : isPlaid(l) !== true));
+      plaidNote = { variant, listingsBefore: before, plaidKnown: known, kept: unique.length };
+    }
 
     /*
      * Сначала ищем как можно ближе к лоту и расширяем, только если
@@ -550,6 +628,7 @@ class MinskMarketPrices {
         mileageKmFrom: step.mileage ? Math.max(0, Math.round(lotKm - mileageWindow)) : null,
         mileageKmTo: step.mileage ? Math.round(lotKm + mileageWindow) : null,
       },
+      ...(plaidNote ? { plaid: plaidNote } : {}),
       analogsCount: analogs.length,
       bySource: Object.fromEntries(
         this.sources.map(s => [s.name, analogs.filter(l => l.source === s.name).length])
@@ -578,7 +657,9 @@ class MinskMarketPrices {
       return {
         ...summary,
         status: "too_few_analogs",
-        reason: `Нашлось аналогов: ${analogs.length}, нужно не меньше ${MIN_ANALOGS}`,
+        reason: variant === "plaid"
+          ? `Лот Plaid: аналогов Plaid в ${this.region.label === "Беларуси" ? "Беларуси" : this.region.label} ${analogs.length}, нужно не меньше ${MIN_ANALOGS} — по цене обычной Model S/X оценивать нельзя`
+          : `Нашлось аналогов: ${analogs.length}, нужно не меньше ${MIN_ANALOGS}`,
       };
     }
 

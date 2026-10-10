@@ -1,7 +1,9 @@
 const defaultHistory = require("../history/store");
 const { calculateMaxBid } = require("./max-bid");
+const { getVinInfo } = require("../providers/tesla-vin");
+const { vinFactsOf } = require("./destination-deals");
 const { modelKey } = require("./forecast-positions");
-const { checkSeller } = require("../providers/lot-requirements");
+const { pickSeller } = require("../providers/lot-requirements");
 const { noticeFields } = require("../providers/lot-notices");
 
 /*
@@ -13,11 +15,12 @@ const { noticeFields } = require("../providers/lot-notices");
  * разбор фото и продавец, что в последней оценке, и новая точка прогноза.
  */
 const recalculateOpenLots = ({ model, bidCars, photoAssessor, history = defaultHistory, now = Date.now(), reason }) => {
-  const key = modelKey(model);
+  // Без модели — все открытые лоты (пересчёт после смены ставок, например логистики по портам).
+  const key = model ? modelKey(model) : null;
   const byLot = new Map();
 
   for (const entry of history.readAll()) {
-    if (modelKey(entry.model) !== key)
+    if (key !== null && modelKey(entry.model) !== key)
       continue;
 
     const lot = String(entry.lotNumber);
@@ -46,12 +49,15 @@ const recalculateOpenLots = ({ model, bidCars, photoAssessor, history = defaultH
       continue;
 
     const sellers = [listing.seller, ...entries.map(entry => entry.lotDetails?.seller).reverse()];
-    const seller = sellers.find(value => checkSeller(value).known) || sellers.find(Boolean);
+    const seller = pickSeller(sellers);
     const lotDetails = entries.map(entry => entry.lotDetails).filter(Boolean).pop() || {};
     const photoAssessment = photoAssessor?.getCached?.(lotNumber) || null;
 
     const result = calculateMaxBid({
       ...listing,
+      ...vinFactsOf(getVinInfo().peek(listing.vin || latest.vin)),
+      // Место стоянки определяет порт и логистику: в реестре его может не быть, тогда берём из карточки лота.
+      location: listing.location || lotDetails.location || latest.location,
       lotNumber,
       ...noticeFields(lotDetails),
       ...(seller ? { seller } : {}),

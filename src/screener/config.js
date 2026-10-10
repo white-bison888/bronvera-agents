@@ -28,7 +28,17 @@ module.exports = {
 
   make: "Tesla",
 
+  /*
+   * Fast Buy (07.10): лоты с открытым выкупом по фиксированной цене —
+   * в приоритете (решение Mikita). Их выборка сканируется первой, а список
+   * "fastBuy" ранжируется по прибыли при цене выкупа и не имеет потолка цены.
+   * Окно выкупа закрывается раньше торгов, поэтому на разбор фото ему нужно
+   * те же минимум часов, что и торгам.
+   */
+  scanFastBuyFirst: true,
+
   tiers: [
+    { id: "fastBuy", label: "Fast Buy", fastBuy: true, maxCandidates: 10 },
     { id: "upTo15k", label: "до $15 000", maxExpectedPriceUsd: 15000, maxCandidates: 10 },
     { id: "upTo10k", label: "до $10 000", maxExpectedPriceUsd: 10000, maxCandidates: 10 },
   ],

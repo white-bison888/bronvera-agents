@@ -53,6 +53,9 @@ const NOT_INSURERS = [
  */
 const UNKNOWN_SELLER = /^-+$|^n\/a$|^unknown$|^no\s+information$/i;
 
+// «No information» — страницу лота прочитали, а площадка продавца не публикует: больше узнать неоткуда.
+const UNPUBLISHED_SELLER = /^no\s+information$/i;
+
 const isInsuranceSeller = value => {
   const seller = String(value || "").trim();
 
@@ -79,17 +82,41 @@ const checkSeller = (seller) => {
    * выбывает, а неизвестного — оценивается с пометкой, иначе половина
    * выдачи пропадёт из-за того, чего площадка просто не публикует.
    */
-  if (!value || UNKNOWN_SELLER.test(value))
-    return { ok: false, known: false, reason: "продавец не указан" };
+  if (!value || UNKNOWN_SELLER.test(value)) {
+    const unpublished = UNPUBLISHED_SELLER.test(value);
+
+    return {
+      ok: false,
+      known: false,
+      unpublished,
+      kind: unpublished ? "unpublished" : "unread",
+      reason: "продавец не указан",
+    };
+  }
 
   if (!isInsuranceSeller(value))
     return {
       ok: false,
       known: true,
+      unpublished: false,
+      kind: "other",
       reason: `продавец «${value}», нужна страховая компания`,
     };
 
-  return { ok: true, known: true, reason: null };
+  return { ok: true, known: true, unpublished: false, kind: "insurance", reason: null };
+};
+
+/*
+ * Из нескольких источников продавца (выдача, страница лота, прежние записи) берём самый
+ * полезный: известного, иначе «не публикуется» (страницу уже прочитали), иначе что есть.
+ * Раньше «---» из выдачи перебивал «No information» со страницы лота, и лот вечно ждал продавца.
+ */
+const pickSeller = (candidates) => {
+  const list = candidates.filter(value => String(value || "").trim());
+
+  return list.find(value => checkSeller(value).known)
+    || list.find(value => checkSeller(value).unpublished)
+    || list[0];
 };
 
 module.exports = {
@@ -97,4 +124,5 @@ module.exports = {
   isRunAndDrive,
   isInsuranceSeller,
   checkSeller,
+  pickSeller,
 };

@@ -72,6 +72,9 @@ const lotWarnings = (vehicle = {}) => {
   if (vehicle.soldBefore)
     warnings.push(`Лот уже продавался на другом аукционе (${vehicle.soldBefore}) — возможен перекуп`);
 
+  if (Array.isArray(vehicle.trimUnconfirmed) && vehicle.trimUnconfirmed.length)
+    warnings.push(`Комплектация «${vehicle.trimUnconfirmed.join(", ")}» не подтверждена: площадка называет её только на странице лота`);
+
   /*
    * Неизвестный продавец не отсекает лот (правило 13.09), но помечается
    * (решение Mikita 15.09). «No information» — площадка сама его не знает;

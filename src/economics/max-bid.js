@@ -1,4 +1,5 @@
-const defaultRates = require("./rates");
+const { DEFAULT_MARKET, marketOf } = require("./markets");
+const { logisticsFor } = require("./logistics");
 const forecastPositions = require("./forecast-positions");
 const { checkSeller } = require("../providers/lot-requirements");
 const { lotWarnings } = require("../providers/lot-notices");
@@ -143,6 +144,118 @@ const importTaxes = (vehicle, rates, now = new Date()) => {
   };
 };
 
+/*
+ * Вид топлива лота: из расшифровки VIN (fuelKind), иначе по тексту fuelType.
+ * От него зависит акциз в Польше.
+ */
+const fuelKindOf = (vehicle) => {
+  if (vehicle.fuelKind)
+    return vehicle.fuelKind;
+
+  const text = String(vehicle.fuelType || "");
+
+  if (/plug|phev/i.test(text))
+    return "phev";
+  if (/hybrid|гибрид/i.test(text))
+    return "hybrid";
+  if (/electric|elektr/i.test(text))
+    return "electric";
+  if (/diesel|дизел/i.test(text))
+    return "diesel";
+  if (/gas|benz|бенз/i.test(text))
+    return "gasoline";
+
+  return null;
+};
+
+/*
+ * Польша: пошлина 10%, акциз по топливу и объёму, НДС 23%. Объём неизвестен —
+ * берём верхнюю ставку и помечаем: цифра осторожная, а не точная.
+ */
+const importTaxesPL = (vehicle, rates, now = new Date()) => {
+  const year = Number(vehicle.year);
+  const ageYears = Number.isFinite(year) ? now.getFullYear() - year : null;
+  const kind = fuelKindOf(vehicle);
+  const volume = Number(vehicle.displacementL);
+  const known = Number.isFinite(volume) && volume > 0;
+  const large = !known || volume > rates.exciseEngineLimitL;
+
+  let exciseRate;
+
+  if (kind === "electric")
+    exciseRate = rates.exciseRates.electric;
+  else if (kind === "hybrid" || kind === "phev")
+    exciseRate = large ? rates.exciseRates.hybridLarge : rates.exciseRates.hybridSmall;
+  else
+    exciseRate = large ? rates.exciseRates.gasolineLarge : rates.exciseRates.gasolineSmall;
+
+  return {
+    ageYears,
+    dutyRate: rates.dutyRate,
+    exciseRate,
+    // Топливо или объём не известны — акциз взят по осторожной (верхней) ставке.
+    exciseAssumed: kind === null || (kind !== "electric" && !known),
+    fuelKind: kind,
+    vatRate: rates.vatRate,
+    vatExempt: false,
+    vatAgeBorderline: false,
+    recyclingFeeUsd: 0,
+    customsFeeUsd: rates.customsFeeUsd || 0,
+  };
+};
+
+/*
+ * Бензин и дизель в Беларусь как физлицо (07.10.2026). Пошлина зависит от
+ * таможенной стоимости (до 3 лет) и объёма двигателя, поэтому возвращаем
+ * функцию от стоимости, а не долю. Без объёма пошлину не посчитать — возвращаем null.
+ */
+const isIceFuel = vehicle => ["gasoline", "diesel"].includes(fuelKindOf(vehicle));
+
+const importTaxesBYIndividual = (vehicle, rates, now = new Date()) => {
+  const scheme = rates.individualScheme;
+  const volume = Math.round(Number(vehicle.displacementL) * 1000);
+
+  if (!Number.isFinite(volume) || volume <= 0)
+    return null;
+
+  const year = Number(vehicle.year);
+  const ageYears = Number.isFinite(year) ? now.getFullYear() - year : null;
+  // Модельный год вместо даты выпуска: 2 года — до 3 лет, 3–4 — от 3 до 5, 5 и больше — старше 5.
+  const category = ageYears === null || ageYears >= 5 ? "over5" : ageYears >= 3 ? "from3to5" : "under3";
+  const toEur = rates.bynPerUsd / rates.bynPerEur;
+  const perCc = (table) => table.find(([top]) => volume <= top)[1];
+
+  const dutyFn = (customsValueUsd) => {
+    if (category === "under3") {
+      const eur = customsValueUsd * toEur;
+      const [, share, rate] = scheme.under3.find(([top]) => eur <= top);
+
+      return Math.max(eur * share, volume * rate) / toEur;
+    }
+
+    return (volume * perCc(category === "from3to5" ? scheme.from3to5 : scheme.over5)) / toEur;
+  };
+
+  const recyclingByn = category === "under3" ? scheme.recyclingByn.under3 : scheme.recyclingByn.over3;
+
+  return {
+    individual: true,
+    ageYears,
+    ageCategory: category,
+    // Граница по модельному году: точная дата выпуска может сдвинуть категорию.
+    ageBorderline: ageYears === 3 || ageYears === 5,
+    volumeCc: volume,
+    dutyFn,
+    dutyRate: null,
+    exciseRate: 0,
+    vatRate: 0,
+    vatExempt: true,
+    vatAgeBorderline: false,
+    recyclingFeeUsd: recyclingByn / rates.bynPerUsd,
+    customsFeeUsd: scheme.customsFeeByn / rates.bynPerUsd,
+  };
+};
+
 const readForecast = (vehicle, rates) => {
   const min = Number(vehicle.auctionEstimateMin);
   const max = Number(vehicle.auctionEstimateMax);
@@ -158,8 +271,40 @@ const readForecast = (vehicle, rates) => {
   };
 };
 
+/*
+ * Сбор аукциона: по таблице (линейно между точками) либо прежней прямой, если ставки заданы
+ * вызовом явно. IAAI дороже Copart на фиксированную сумму; неизвестная площадка — как Copart.
+ */
+const auctionFeeFn = (vehicle, rates, overrides) => {
+  const table = rates.auctionFeeTable;
+
+  if (!table || overrides.auctionFeeRate !== undefined || overrides.auctionFeeFixed !== undefined)
+    return { fee: price => price * rates.auctionFeeRate + rates.auctionFeeFixed, linear: true };
+
+  const extra = /iaai/i.test(String(vehicle.auction || "")) ? (rates.iaaiFeeExtraUsd || 0) : 0;
+  const last = table[table.length - 1];
+
+  const fee = (price) => {
+    if (price <= table[0][0])
+      return table[0][1] + extra;
+
+    if (price >= last[0])
+      return last[1] + (price - last[0]) * rates.auctionFeeTopSlope + extra;
+
+    const index = table.findIndex(([top]) => price <= top);
+    const [x1, y1] = table[Math.max(0, index - 1)];
+    const [x2, y2] = table[index];
+
+    return y1 + ((price - x1) / (x2 - x1)) * (y2 - y1) + extra;
+  };
+
+  return { fee, linear: false };
+};
+
 const calculateDeal = (vehicle, overrides = {}) => {
-  const rates = { ...defaultRates, ...overrides };
+  // Рынок назначения: вызов важнее данных лота; без указания — Беларусь, как всегда.
+  const destination = marketOf(overrides.destination || vehicle.destination)?.id || DEFAULT_MARKET;
+  const rates = { ...marketOf(destination).rates(), ...overrides };
 
   /*
    * Поправка точки прогноза для модели, принятая Mikita в «Поправках».
@@ -235,7 +380,8 @@ const calculateDeal = (vehicle, overrides = {}) => {
    * продавцом — так 19.09 прошёл 1-64403346, у которого на странице лота
    * стоит Non-insurance Company.
    */
-  if (rates.requireKnownSeller !== false && !seller.known) {
+  // Площадка продавца не публикует (страницу лота прочитали): ждать нечего — оцениваем с пометкой (решение Mikita 09.10).
+  if (rates.requireKnownSeller !== false && !seller.known && !seller.unpublished) {
     return {
       lotNumber: vehicle.lotNumber || null,
       maxBidUsd: null,
@@ -268,39 +414,111 @@ const calculateDeal = (vehicle, overrides = {}) => {
     damageType = norm.damageType;
   }
 
-  const taxes = importTaxes(vehicle, rates);
+  const individual = destination === "BY" && isIceFuel(vehicle);
+  const taxes = destination === "PL"
+    ? importTaxesPL(vehicle, rates)
+    : individual ? importTaxesBYIndividual(vehicle, rates) : importTaxes(vehicle, rates);
+
+  // Бензин/дизель в Беларуси: пошлина зависит от объёма, без него вердикта нет.
+  if (!taxes) {
+    return {
+      lotNumber: vehicle.lotNumber || null,
+      maxBidUsd: null,
+      viable: false,
+      verdict: "NEEDS_ENGINE_DATA",
+      photoStatus: hasPhotoAssessment(photo) ? "ok" : "skipped",
+      reason: "Объём двигателя неизвестен — пошлина в Беларуси считается по объёму, расчёт не выдаётся",
+    };
+  }
+
+  const exciseRate = taxes.exciseRate || 0;
   const resaleValue = marketValue * (1 - rates.resaleDiscount);
   const evSurcharge = isElectric(vehicle) ? rates.evOceanSurchargeUsd : 0;
-  const remote = remoteState(vehicle, rates);
+  /*
+   * Логистика по портам (07.10): доставка в порт, море и последний отрезок зависят от штата
+   * стоянки. Штата нет в таблице или ставки заданы вызовом явно — прежние общие ставки.
+   * Гавайи и Аляска уже включены в таблицу (длинный перегон), доплата тогда не нужна.
+   */
+  const explicitLogistics = ["usTransportUsd", "oceanFreightUsd", "portToMinskUsd", "inlandTransportUsd"]
+    .some(key => overrides[key] !== undefined);
+  const logistics = explicitLogistics ? null : logisticsFor({ destination, location: vehicle.location, rates });
+  const usTransportUsd = logistics ? logistics.inlandUsd : rates.usTransportUsd;
+  const oceanFreightUsd = logistics ? logistics.seaUsd : rates.oceanFreightUsd;
+
+  const remote = logistics ? null : remoteState(vehicle, rates);
   const remoteSurcharge = remote ? rates.remoteLocationSurchargeUsd[remote] : 0;
   // Доставка до границы входит в таможенную стоимость — доплата тоже облагается.
-  const delivery = rates.usTransportUsd + remoteSurcharge + rates.oceanFreightUsd + evSurcharge + rates.portToMinskUsd;
+  const inland = logistics ? logistics.landUsd : (rates.inlandTransportUsd ?? rates.portToMinskUsd);
+  // Беларусь: перевозка от порта до Минска входит в таможенную стоимость. ЕС: только до порта.
+  const inlandInCustoms = rates.inlandInCustomsValue !== false;
+  const delivery = usTransportUsd + remoteSurcharge + oceanFreightUsd + evSurcharge
+    + (inlandInCustoms ? inland : 0);
 
   // Всё, что не зависит от цены покупки и не входит в таможенную стоимость.
   const fixedCosts = repairCost + rates.bidcarsFeeUsd + rates.localCostsUsd
-    + taxes.recyclingFeeUsd + taxes.customsFeeUsd;
+    + taxes.recyclingFeeUsd + taxes.customsFeeUsd
+    + (inlandInCustoms ? 0 : inland);
+
+  const feeFn = auctionFeeFn(vehicle, rates, overrides);
 
   const costsAt = (price) => {
-    const auctionFees = price * rates.auctionFeeRate + rates.auctionFeeFixed;
+    const auctionFees = feeFn.fee(price);
     const customsValue = price + auctionFees + delivery;
-    const duty = customsValue * taxes.dutyRate;
-    const vat = (customsValue + duty) * taxes.vatRate;
-    const total = customsValue + duty + vat + fixedCosts;
+    const duty = taxes.dutyFn ? taxes.dutyFn(customsValue) : customsValue * taxes.dutyRate;
+    const excise = (customsValue + duty) * exciseRate;
+    const vat = (customsValue + duty + excise) * taxes.vatRate;
+    const total = customsValue + duty + excise + vat + fixedCosts;
 
-    return { price, auctionFees, customsValue, duty, vat, total, profit: resaleValue - total };
+    return { price, auctionFees, customsValue, duty, excise, vat, total, profit: resaleValue - total };
   };
 
-  const taxMultiplier = (1 + taxes.dutyRate) * (1 + taxes.vatRate);
+  const taxMultiplier = (1 + taxes.dutyRate) * (1 + exciseRate) * (1 + taxes.vatRate);
   const customsValueAtCeiling = (resaleValue - rates.minProfitUsd - fixedCosts) / taxMultiplier;
-  const ceiling = (customsValueAtCeiling - rates.auctionFeeFixed - delivery) / (1 + rates.auctionFeeRate);
+  let ceiling = (customsValueAtCeiling - rates.auctionFeeFixed - delivery) / (1 + rates.auctionFeeRate);
+
+  /*
+   * Пошлина физлица — максимум из двух линейных выражений со ступенями, поэтому
+   * потолок ищем делением пополам: прибыль с ростом цены только убывает.
+   */
+  // Пошлина физлица и таблица сбора — не линейные: потолок ищем делением пополам.
+  if (taxes.dutyFn || !feeFn.linear) {
+    if (costsAt(0).profit < rates.minProfitUsd) {
+      ceiling = -1;
+    } else {
+      let lo = 0;
+      let hi = Math.max(resaleValue, 1);
+
+      for (let step = 0; step < 60; step += 1) {
+        const mid = (lo + hi) / 2;
+
+        if (costsAt(mid).profit >= rates.minProfitUsd)
+          lo = mid;
+        else
+          hi = mid;
+      }
+
+      ceiling = lo;
+    }
+  }
 
   const forecast = readForecast(vehicle, rates);
+
+  /*
+   * Fast Buy (07.10): цена выкупа фиксирована и известна заранее, поэтому
+   * прибыль при ней считается отдельно от прогноза торгов. Сборы площадки
+   * берём те же, что для торгов, — отдельной ставки для выкупа у нас нет.
+   */
+  const buyNowUsd = Number(vehicle.buyNowUsd);
+  const atFastBuy = Number.isFinite(buyNowUsd) && buyNowUsd > 0
+    ? { fastBuyPriceUsd: round(buyNowUsd), atFastBuyUsd: round(costsAt(buyNowUsd).profit) }
+    : {};
 
   const profit = forecast
     ? {
         atMinUsd: round(costsAt(forecast.minUsd).profit),
         atExpectedUsd: round(costsAt(forecast.expectedUsd).profit),
         atMaxUsd: round(costsAt(forecast.maxUsd).profit),
+        ...atFastBuy,
       }
     : null;
 
@@ -354,14 +572,17 @@ const calculateDeal = (vehicle, overrides = {}) => {
       purchasePriceUsd: round(at.price),
       repairCostUsd: round(repairCost),
       auctionFeesUsd: round(at.auctionFees),
-      usTransportUsd: rates.usTransportUsd,
+      usTransportUsd,
       remoteLocationSurchargeUsd: remoteSurcharge,
-      oceanFreightUsd: rates.oceanFreightUsd,
+      oceanFreightUsd,
       evOceanSurchargeUsd: evSurcharge,
-      portToMinskUsd: rates.portToMinskUsd,
+      // Беларусь — до Минска, Польша — выгрузка и перевозка по стране (в таможенную стоимость не входит).
+      portToMinskUsd: inland,
+      inlandTransportUsd: inland,
       bidcarsFeeUsd: rates.bidcarsFeeUsd,
       customsValueUsd: round(at.customsValue),
       customsDutyUsd: round(at.duty),
+      exciseUsd: round(at.excise),
       vatUsd: round(at.vat),
       recyclingFeeUsd: round(taxes.recyclingFeeUsd),
       customsFeeUsd: round(taxes.customsFeeUsd),
@@ -372,21 +593,32 @@ const calculateDeal = (vehicle, overrides = {}) => {
     // Все ставки целиком: без них раскладка остаётся набором чисел,
     // который нечем проверить и не с чем спорить.
     assumptions: {
-      market: "Беларусь, ввоз компанией",
+      destination,
+      logistics: logistics
+        ? { state: logistics.state, port: logistics.port, route: logistics.route, seaEstimated: logistics.seaEstimated }
+        : { source: "default" },
+      market: `${marketOf(destination).label}, ввоз компанией`,
       forecastPosition: rates.forecastPosition,
       minProfitUsd: rates.minProfitUsd,
       resaleDiscount: rates.resaleDiscount,
       repairCostBasis: rates.repairCostBasis,
+      auctionFee: feeFn.linear ? "linear" : "table",
       auctionFeeRate: rates.auctionFeeRate,
       auctionFeeFixed: rates.auctionFeeFixed,
-      usTransportUsd: rates.usTransportUsd,
+      usTransportUsd,
       remoteLocation: remote,
       remoteLocationSurchargeUsd: remoteSurcharge,
-      oceanFreightUsd: rates.oceanFreightUsd,
-      portToMinskUsd: rates.portToMinskUsd,
+      oceanFreightUsd,
+      portToMinskUsd: inland,
+      inlandInCustomsValue: inlandInCustoms,
       bidcarsFeeUsd: rates.bidcarsFeeUsd,
       localCostsUsd: rates.localCostsUsd,
       dutyRate: taxes.dutyRate,
+      exciseRate,
+      scheme: taxes.individual ? "physical" : "company",
+      ...(taxes.individual ? { ageCategory: taxes.ageCategory, ageBorderline: taxes.ageBorderline, volumeCc: taxes.volumeCc } : {}),
+      exciseAssumed: taxes.exciseAssumed === true,
+      fuelKind: taxes.fuelKind ?? null,
       evDutyFreeQuota: rates.evDutyFreeQuota,
       vatRate: taxes.vatRate,
       vatExempt: taxes.vatExempt,
@@ -407,4 +639,4 @@ const calculateMaxBid = (vehicle, overrides = {}) => ({
   ...lotWarnings(vehicle),
 });
 
-module.exports = { calculateMaxBid };
+module.exports = { calculateMaxBid, importTaxesBYIndividual, auctionFeeFn };

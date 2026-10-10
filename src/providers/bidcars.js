@@ -7,6 +7,8 @@ const { isRunAndDrive, checkSeller } = require("./lot-requirements");
 const { auctionWindow } = require("./auction-window");
 const { matchTrim } = require("./trim-match");
 const { applyLiteBrowsing } = require("./lite-browsing");
+const { saleTypeOf } = require("./sale-type");
+const { getVinInfo, isVin } = require("./tesla-vin");
 const { expectedPriceUsd } = require("../screener/select");
 const { meterBrowserContext } = require("../costs/ledger");
 
@@ -37,6 +39,10 @@ class BidCarsProvider {
 
     // Каталог (первая страница конкретного source-scope) обновляем
     // не чаще одного раза в 2 часа.
+    // Глубокий поиск (07.10): добавочные запросы с суженными фильтрами, когда одна выдача упёрлась в 50 лотов.
+    this.deepSearchMaxSlices = Number.isInteger(Number(options.deepSearchMaxSlices)) ? Number(options.deepSearchMaxSlices) : 4;
+    this.deepSearchPauseMs = Array.isArray(options.deepSearchPauseMs) ? options.deepSearchPauseMs : [20000, 40000];
+
     this.minRefreshMs =
       Number(options.minRefreshMs) || 2 * 60 * 60 * 1000;
 
@@ -128,6 +134,8 @@ class BidCarsProvider {
     const bucket =
       this.getBucket(cache, bucketKey);
 
+    await this.warmVinTrims(bucket.vehicles || [], filters);
+
     const now =
       Date.now();
 
@@ -177,12 +185,20 @@ class BidCarsProvider {
             maxResults
           );
 
-        const coverage =
+        let coverage =
           this.getCoverageState(
             bucket,
             pool.length,
             targetPoolSize
           );
+
+        if (
+          !coverage.complete &&
+          coverage.status !== "sufficient" &&
+          this.isFilteredComplete(bucket, filters)
+        ) {
+          coverage = { ...coverage, status: "complete", complete: true, filteredPageComplete: true };
+        }
 
         return {
           pool,
@@ -327,13 +343,27 @@ class BidCarsProvider {
           }
         );
 
+        // Страница короче 50 лотов — это вся выдача bid.cars по адресу поиска: запоминаем, чтобы не говорить «лимит глубины».
+        this.markFilteredComplete(bucket, filters, (firstPageRefresh.listings || []).length);
+
+        // Выдача упёрлась в 50 лотов — добираем суженными запросами (аукцион, модель, год).
+        await this.refreshDeepSlices({
+          bucketKey,
+          filters,
+          bucket,
+          firstCount: (firstPageRefresh.listings || []).length,
+        });
+
         cache.version = 3;
         cache.buckets[bucketKey] =
           bucket;
 
         this.saveCache(cache);
 
+        await this.warmVinTrims(bucket.vehicles || [], filters);
+
         local =
+
           evaluateLocal();
 
         if (
@@ -432,7 +462,10 @@ class BidCarsProvider {
 
           this.saveCache(cache);
 
+          await this.warmVinTrims(bucket.vehicles || [], filters);
+
           local =
+
             evaluateLocal();
         }
       }
@@ -491,7 +524,10 @@ class BidCarsProvider {
 
       this.saveCache(cache);
 
+      await this.warmVinTrims(bucket.vehicles || [], filters);
+
       local =
+
         evaluateLocal();
 
       this.recordQuery(
@@ -684,6 +720,39 @@ class BidCarsProvider {
       "Следующая попытка:",
       bucket.nextAllowedAt
     );
+  }
+
+  /*
+   * Адрес поиска несёт марку, модель, годы и топливо (09.10). Если страница по нему короче 50 лотов,
+   * это вся выдача bid.cars по этим условиям, а не упор в глубину каталога.
+   */
+  filteredKey(filters) {
+    if ((filters.models || []).length !== 1)
+      return null;
+
+    return [
+      this.norm(filters.models[0]),
+      filters.yearFrom ?? "",
+      filters.yearTo ?? "",
+      (filters.fuelTypes || []).join(","),
+      (filters.auctionTypes || []).join(","),
+    ].join("|");
+  }
+
+  markFilteredComplete(bucket, filters, count) {
+    const key = this.filteredKey(filters);
+
+    if (!key || count >= 50)
+      return;
+
+    bucket.filteredComplete = { ...(bucket.filteredComplete || {}), [key]: new Date().toISOString() };
+  }
+
+  isFilteredComplete(bucket, filters) {
+    const key = this.filteredKey(filters);
+    const at = key && bucket.filteredComplete ? Date.parse(bucket.filteredComplete[key]) : NaN;
+
+    return Number.isFinite(at) && Date.now() - at < this.minRefreshMs;
   }
 
   getCoverageState(
@@ -921,7 +990,8 @@ class BidCarsProvider {
       type: "Automobile",
 
       // Только открытые торги: по завершённым ставку делать уже поздно.
-      status: "Active",
+      // Fast-buy — подборка лотов с открытым выкупом по фиксированной цене.
+      status: filters.status || "Active",
 
       // Обязательные признаки версии — задаём на источнике, а не после.
       "start-code": "Run and Drive",
@@ -1314,6 +1384,8 @@ class BidCarsProvider {
               ...collected,
               ...existingVehicles,
             ]);
+
+          await this.warmVinTrims(combined, filters);
 
           const matchCount =
             this.filterAndRank(
@@ -1742,6 +1814,16 @@ class BidCarsProvider {
                 )
               : null,
 
+          saleType:
+            saleTypeOf({
+              buyNowUsd:
+                buyNowMatch
+                  ? this.parseMoney(
+                      buyNowMatch[1]
+                    )
+                  : null,
+            }),
+
           seller:
             sellerMatch
               ? this.clean(
@@ -2069,6 +2151,96 @@ class BidCarsProvider {
   // FILTERING
   // ============================================================
 
+  /*
+   * ГЛУБОКИЙ ПОИСК. Выдача bid.cars ограничена 50 ближайшими по времени торгов
+   * лотами: кнопку «Load More» Cloudflare закрывает, повторный запрос того же
+   * адреса считает долбёжкой. Увеличить охват можно только другими запросами —
+   * с суженными фильтрами каждый даёт свои 50 ближайших. Разбиваем по аукциону
+   * (Copart / IAAI), затем по моделям и годам, но не больше нескольких запросов:
+   * это ещё и расход прокси, и риск 403.
+   */
+  deepSearchSlices(filters) {
+    const slices = [];
+
+    if (!(Array.isArray(filters.auctionTypes) && filters.auctionTypes.length === 1))
+      slices.push({ auctionTypes: ["Copart"] }, { auctionTypes: ["IAAI"] });
+
+    if (!(Array.isArray(filters.models) && filters.models.length === 1)
+      && Array.isArray(filters.models) && filters.models.length > 1 && filters.models.length <= 3)
+      slices.push(...filters.models.map(model => ({ models: [model] })));
+
+    const from = Number(filters.yearFrom);
+    const to = Number(filters.yearTo);
+
+    if (Number.isInteger(from) && Number.isInteger(to) && to > from && to - from <= 4) {
+      for (let year = from; year <= to; year += 1)
+        slices.push({ yearFrom: year, yearTo: year });
+    }
+
+    return slices.slice(0, this.deepSearchMaxSlices);
+  }
+
+  async refreshDeepSlices({ bucketKey, filters, bucket, firstCount }) {
+    // Выдача не упёрлась в потолок — глубже искать нечего.
+    if (firstCount < 50)
+      return 0;
+
+    const slices = this.deepSearchSlices(filters);
+    let added = 0;
+
+    for (let index = 0; index < slices.length; index += 1) {
+      const pause = this.deepSearchPauseMs;
+      const wait = Array.isArray(pause) ? pause[0] + Math.floor(Math.random() * (pause[1] - pause[0] + 1)) : 0;
+
+      if (wait > 0)
+        await new Promise(resolve => setTimeout(resolve, wait));
+
+      try {
+        const refresh = await this.refreshSource({
+          bucketKey,
+          startPage: 1,
+          pageLimit: 1,
+          filters: { ...filters, ...slices[index] },
+          targetMatches: null,
+          existingVehicles: bucket.vehicles,
+        });
+
+        // Отказ площадки — дальше только хуже: останавливаемся с тем, что есть.
+        if (refresh.partialRefresh || [403, 429].includes(refresh.partialHttpStatus))
+          break;
+
+        const before = bucket.vehicles.length;
+
+        this.applySuccessfulRefresh(bucket, refresh, new Date(), { isCatalogHeadRefresh: false });
+        added += Math.max(0, bucket.vehicles.length - before);
+
+        console.log(`   Глубокий поиск ${index + 1}/${slices.length}: +${bucket.vehicles.length - before} лотов`);
+      } catch (error) {
+        console.log(`   Глубокий поиск остановлен: ${String(error.message).slice(0, 80)}`);
+        break;
+      }
+    }
+
+    return added;
+  }
+
+  /*
+   * Расшифровать VIN лотов, у которых площадка не назвала комплектацию, — до отбора.
+   * Сам отбор синхронный и читает только кэш расшифровок; сбой сети ничего не ломает.
+   */
+  async warmVinTrims(vehicles, filters) {
+    if (!filters.trims.length)
+      return;
+
+    const info = getVinInfo();
+    const need = vehicles
+      .filter(car => isVin(car.vin) && !info.peek(car.vin) && matchTrim(car, filters.trims).status === "unknown")
+      .map(car => car.vin);
+
+    if (need.length)
+      await info.ensure(need);
+  }
+
   filterAndRank(
     vehicles,
     filters,
@@ -2177,6 +2349,37 @@ class BidCarsProvider {
 
     if (active.length < eligible.length)
       console.log(`   Торги прошли, лот только в истории: скрыто ${eligible.length - active.length}`);
+
+    const matched = evaluated.filter(car => car.filterStatus !== "MISMATCH");
+
+    /*
+     * Лоты по модели и году есть, но комплектация не подтверждена ни у одного (09.10): площадка
+     * часто называет её только на странице лота. Вместо «ничего не найдено» показываем такие лоты
+     * с пометкой — отсеянными по другой причине (бюджет, пробег) они не считаются.
+     */
+    if (!matched.length && filters.trims?.length) {
+      // Текст комплектации площадка обрезает («Performance All-...»), но название версии в нём уже видно.
+      const NAMED_VARIANT = /performance|standard range|long range|plaid|\bplus\b|rear-wheel|dual motor|single motor/i;
+      const wantedText = filters.trims.map(trim => String(trim).toLowerCase());
+      const namesOther = car => NAMED_VARIANT.test(String(car.trim || ""))
+        && !wantedText.some(trim => String(car.trim).toLowerCase().includes(trim));
+
+      const unconfirmed = evaluated
+        .filter(car => onlyFailed(car, "trim") && car.trimStatus === "unknown" && !namesOther(car))
+        .map(car => ({
+          ...car,
+          filterStatus: "PARTIAL",
+          mismatchFields: [],
+          unknownFields: [...car.unknownFields, "trim"],
+          trimUnconfirmed: filters.trims,
+        }));
+
+      if (unconfirmed.length) {
+        this.lastFilterStats.trimFallback = unconfirmed.length;
+
+        return unconfirmed.slice(0, maxResults);
+      }
+    }
 
     return evaluated
 
@@ -2401,9 +2604,23 @@ class BidCarsProvider {
 
     // TRIM — лот без данных о комплектации проверить нельзя, поэтому не берём.
 
-    const trim = filters.trims.length
+    let trim = filters.trims.length
       ? matchTrim(car, filters.trims)
       : null;
+
+    /*
+     * Площадка комплектацию не назвала (Copart часто пишет только «2022 RAM 1500») —
+     * берём её из VIN: NHTSA знает «TRX», «Raptor», «Big Horn». Расшифровка VIN —
+     * подтверждённый источник, поэтому и «подходит», и «не подходит» по ней
+     * честные ответы, а не «неизвестно». Без расшифровки всё как раньше.
+     */
+    if (trim && trim.status === "unknown" && isVin(car.vin)) {
+      const info = getVinInfo().peek(car.vin);
+      const vinTrim = info && info.ok ? String(info.trim || "").replace(/\s*·\s*/g, ", ") : "";
+
+      if (vinTrim)
+        trim = { ...matchTrim({ trim: vinTrim }, filters.trims), source: "vin" };
+    }
 
     if (trim && ["mismatch", "unknown"].includes(trim.status))
       mismatch("trim");
@@ -2429,7 +2646,7 @@ class BidCarsProvider {
       filterStatus,
       unknownFields,
       mismatchFields,
-      ...(trim ? { trimStatus: trim.status, possibleTrims: trim.possible } : {}),
+      ...(trim ? { trimStatus: trim.status, possibleTrims: trim.possible, ...(trim.source ? { trimSource: trim.source } : {}) } : {}),
       ...(budget ? { expectedPriceUsd: expected } : {}),
     };
   }
@@ -3219,6 +3436,15 @@ class BidCarsProvider {
     } else {
       message =
         "В локальном реестре и просмотренной части каталога совпадений пока нет. Покрытие неполное, поэтому это НЕ означает отсутствие таких автомобилей на Bid.Cars.";
+    }
+
+    const unconfirmedTrims = listings.find(car => car.trimUnconfirmed?.length)?.trimUnconfirmed;
+
+    if (unconfirmedTrims) {
+      message =
+        `Лотов с подтверждённой комплектацией «${unconfirmedTrims.join(", ")}» не найдено. ` +
+        `Показаны ${listings.length} лот(ов) по модели и году: комплектация у них не подтверждена ` +
+        "(площадка называет её только на странице лота), её нужно проверить.";
     }
 
     if (

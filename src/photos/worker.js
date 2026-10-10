@@ -1,7 +1,7 @@
 const queue = require("./queue");
 const history = require("../history/store");
 const { calculateMaxBid } = require("../economics/max-bid");
-const { checkSeller } = require("../providers/lot-requirements");
+const { checkSeller, pickSeller } = require("../providers/lot-requirements");
 const proxyState = require("../providers/proxy-state");
 const { withRun } = require("../costs/ledger");
 const { noticeFields } = require("../providers/lot-notices");
@@ -400,7 +400,7 @@ class PhotoWorker {
 
     // «---» из выдачи не должен перебивать продавца со страницы лота.
     const sellers = [listing.seller, ...entries.map(entry => entry.lotDetails?.seller).reverse()];
-    const seller = sellers.find(value => checkSeller(value).known) || sellers.find(Boolean);
+    const seller = pickSeller(sellers);
     const lotDetails = entries.map(entry => entry.lotDetails).filter(Boolean).pop() || {};
 
     const result = calculateMaxBid({

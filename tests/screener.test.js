@@ -113,9 +113,12 @@ test('two tiers rank by expected profit, the cheaper tier keeps only lots up to 
     item('d', 9500, 1000, 8000),
   ], config);
 
-  assert.deepEqual(tiers[0].candidates.map(c => [c.lot.lotNumber, c.rank]), [['b', 1], ['a', 2], ['d', 3]]);
-  assert.deepEqual(tiers[1].candidates.map(c => c.lot.lotNumber), ['b', 'd']);
-  assert.equal(tiers[1].label, 'до $10 000');
+  const byId = id => tiers.find(tier => tier.id === id);
+
+  assert.deepEqual(byId('upTo15k').candidates.map(c => [c.lot.lotNumber, c.rank]), [['b', 1], ['a', 2], ['d', 3]]);
+  assert.deepEqual(byId('upTo10k').candidates.map(c => c.lot.lotNumber), ['b', 'd']);
+  assert.equal(byId('upTo10k').label, 'до $10 000');
+  assert.deepEqual(byId('fastBuy').candidates, []);
 });
 
 test('daily run scans slices with retries, writes the day file, history and photo queue', async () => {
@@ -156,7 +159,7 @@ test('daily run scans slices with retries, writes the day file, history and phot
       },
     },
     fetchSlice,
-    config: { ...config, slices: config.slices.slice(0, 4) },
+    config: { ...config, slices: config.slices.slice(0, 4), scanFastBuyFirst: false },
     sleep: async () => {},
     log: () => {},
   });
@@ -173,7 +176,8 @@ test('daily run scans slices with retries, writes the day file, history and phot
   assert.ok(downloaded.every(([, images]) => images === 1));
   assert.equal(state.photosFromListing, 1);
 
-  const [upTo15k, upTo10k] = state.tiers;
+  const upTo15k = state.tiers.find(tier => tier.id === 'upTo15k');
+  const upTo10k = state.tiers.find(tier => tier.id === 'upTo10k');
   assert.deepEqual(upTo15k.candidates.map(c => c.lotNumber), ['0-1', '1-3']);
   assert.deepEqual(upTo10k.candidates.map(c => c.lotNumber), ['0-1']);
   assert.deepEqual(upTo15k.candidates[0].inTiers, { upTo15k: 1, upTo10k: 1 });
@@ -194,8 +198,9 @@ test('daily run scans slices with retries, writes the day file, history and phot
   assert.equal(history.readAll().length, 2);
 
   const live = screener.withLiveState(screener.latestDay(fetchedAt));
-  assert.equal(live.tiers[0].candidates[0].now.decision, 'PENDING_PHOTOS');
-  assert.equal(live.tiers[0].candidates[0].now.photoQueue.status, 'pending');
+  const liveTier = live.tiers.find(tier => tier.id === 'upTo15k');
+  assert.equal(liveTier.candidates[0].now.decision, 'PENDING_PHOTOS');
+  assert.equal(liveTier.candidates[0].now.photoQueue.status, 'pending');
 });
 
 test('schedule runs every day after 7:00 Minsk and retries a failed scan at most three times', () => {
@@ -230,4 +235,80 @@ test('a screening window still closes when pilotUntil is set', () => {
   assert.equal(screener.shouldRun(at('2026-09-19T05:00:00Z')), false); // окно закрылось
   assert.equal(screener.pilotOver('2026-09-19'), true);
   assert.equal(screener.pilotOver('2026-09-18'), false);
+});
+
+
+test('Fast Buy: sale type comes from the buy-now price and the window close from the listing', () => {
+  const fetchedAt = new Date('2026-10-07T12:00:00Z');
+  const fast = mapSearchItem(apiItem({ buy_now_price: '$8,500', buy_now_close_time: 38246 }), { fetchedAt, make: 'Tesla' });
+  const plain = mapSearchItem(apiItem({ buy_now_price: null }), { fetchedAt, make: 'Tesla' });
+
+  assert.equal(fast.saleType, 'fastBuy');
+  assert.equal(fast.buyNowUsd, 8500);
+  assert.equal(fast.buyNowCloseAt, new Date(fetchedAt.getTime() + 38246000).toISOString());
+  assert.equal(plain.saleType, 'auction');
+  assert.equal(plain.buyNowCloseAt, null);
+});
+
+test('Fast Buy: the lot page tells an open offer from a lot already sold by Fast Buy', () => {
+  const { readLotPage } = require('../src/providers/sale-type');
+
+  assert.deepEqual(readLotPage('Fast Buy Price:\n$8,500 USD\nBuy Now'), { buyNowUsd: 8500, soldByFastBuy: false });
+  assert.deepEqual(readLotPage('Fast Buy Price: $5,975 USD Sold by Fast Buy'), { buyNowUsd: 5975, soldByFastBuy: true });
+  assert.deepEqual(readLotPage('Current Bid $1,050 USD'), { buyNowUsd: null, soldByFastBuy: false });
+});
+
+test('Fast Buy: profit at the buy-now price is calculated next to the auction forecast', () => {
+  const { calculateMaxBid } = require('../src/economics/max-bid');
+  const lot = {
+    make: 'Tesla', model: 'Model 3', year: 2021, mileage: 46186, primaryDamage: 'Collision',
+    marketValueUsd: 22300, auctionEstimateMin: 5050, auctionEstimateMax: 5250,
+    seller: 'Progressive Casualty Insurance', runAndDrive: 'Run and Drive', location: 'Metro DC (MD)',
+  };
+
+  const withBuyNow = calculateMaxBid({ ...lot, buyNowUsd: 5975 }, { requirePhotoAssessment: false });
+  const without = calculateMaxBid(lot, { requirePhotoAssessment: false });
+
+  assert.equal(withBuyNow.profit.fastBuyPriceUsd, 5975);
+  // Дороже прогноза торгов на ~$770 — прибыль меньше.
+  assert.ok(withBuyNow.profit.atFastBuyUsd < withBuyNow.profit.atExpectedUsd);
+  assert.equal(without.profit.atFastBuyUsd, undefined);
+});
+
+test('Fast Buy: its own list ranks by profit at the buy-now price and drops closed windows', () => {
+  const now = new Date('2026-10-07T12:00:00Z');
+  const inHours = hours => new Date(now.getTime() + hours * 3600000).toISOString();
+  const item = (lotNumber, saleType, closeInHours, profitAtFastBuyUsd, repairRoomAtFastBuyUsd) => ({
+    lot: { lotNumber, saleType, buyNowCloseAt: inHours(closeInHours), saleDate: inHours(30) },
+    expectedPriceUsd: 6000, profitAtExpectedUsd: 100, repairRoomUsd: 100,
+    profitAtFastBuyUsd, repairRoomAtFastBuyUsd,
+  });
+
+  const [fastBuy] = rankTiers([
+    item('a', 'fastBuy', 10, 2000, 4000),
+    item('b', 'fastBuy', 10, 5000, 7000),
+    item('c', 'fastBuy', 2, 9000, 9000),     // окно закроется раньше, чем разберём фото
+    item('d', 'auction', 10, 9000, 9000),    // выкупа нет
+    item('e', 'fastBuy', 10, 1000, 1500),    // запаса на ремонт нет
+  ], config, now);
+
+  assert.equal(fastBuy.id, 'fastBuy');
+  assert.deepEqual(fastBuy.candidates.map(c => c.lot.lotNumber), ['b', 'a']);
+});
+
+test('Fast Buy: the scan starts with the Fast-buy selection of every slice', async () => {
+  const bidCars = new BidCarsProvider({ cacheFile: path.join(temp, 'data', 'bidcars-cache-fb.json') });
+  const urls = [];
+
+  const screener = new DailyScreener({
+    bidCars, marketPrices: { lookup: async () => ({}) }, photoAssessor: { getCached: () => null },
+    fetchSlice: async (url) => { urls.push(url); return { items: [], hasMore: false, activeCount: 0 }; },
+    config: { ...config, slices: config.slices.slice(0, 2) },
+    dataDir: path.join(temp, 'data', 'screener-fb'),
+    sleep: async () => {}, log: () => {},
+  });
+
+  await screener.scanCatalog(() => new Date('2026-10-07T04:00:00Z'));
+
+  assert.deepEqual(urls.map(url => /status=([^&]+)/.exec(url)[1]), ['Fast-buy', 'Fast-buy', 'Active', 'Active']);
 });

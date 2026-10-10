@@ -67,13 +67,21 @@ test('an unknown seller is kept but marked: not given by bid.cars vs not read ye
    * 1-64403346 (на странице лота Non-insurance Company) прошёл как
    * «Перспективный» именно потому, что продавца не прочитали.
    */
-  const result = calculateMaxBid({
-    seller: 'No information', year: 2023, marketValueUsd: 26000,
+  const lot = seller => calculateMaxBid({
+    seller, year: 2023, marketValueUsd: 26000,
     auctionEstimateMin: 5000, auctionEstimateMax: 8000,
     photoAssessment: { available: true, repairCostMin: 1000, repairCostMax: 2000 },
   });
-  assert.equal(result.verdict, 'PENDING_SELLER');
-  assert.equal(result.maxBidUsd, null);
+  const unread = lot('---');
+  assert.equal(unread.verdict, 'PENDING_SELLER');
+  assert.equal(unread.maxBidUsd, null);
+
+  // 09.10: «No information» — площадка продавца не публикует, ждать нечего; лот оценивается с пометкой.
+  const unpublished = lot('No information');
+  assert.notEqual(unpublished.verdict, 'PENDING_SELLER');
+  assert.ok(unpublished.warnings.some(text => /No information/.test(text)));
+  // Известный не страховой отсекается и теперь.
+  assert.equal(lot('Non-insurance Company').verdict, 'SKIP');
 });
 
 test('the deal is still calculated for a restricted lot — it is marked, not dropped', () => {

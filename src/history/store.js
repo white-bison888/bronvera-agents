@@ -136,6 +136,7 @@ const setActual = (lotNumber, actual) => {
         soldPriceUsd: actual.soldPriceUsd ?? null,
         soldAt: actual.soldAt || new Date().toISOString(),
         note: actual.note || null,
+        via: actual.via || null,
       },
     };
   });

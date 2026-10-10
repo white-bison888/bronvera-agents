@@ -14,6 +14,7 @@
 
 const { meterBrowserContext } = require("../costs/ledger");
 const { applyLiteBrowsing } = require("./lite-browsing");
+const { buyNowCloseAt, saleTypeOf } = require("./sale-type");
 
 const SEARCH_REQUEST_PATH = "/app/search/request";
 
@@ -142,6 +143,8 @@ const mapSearchItem = (item, { fetchedAt = new Date(), make = null } = {}) => {
     secondaryDamage: item.primary_damage || null,
     keyPresence: item.specs?.key_info || null,
     buyNowUsd: money(item.buy_now_price),
+    buyNowCloseAt: buyNowCloseAt(item.buy_now_close_time, fetchedAt),
+    saleType: saleTypeOf({ buyNowUsd: money(item.buy_now_price) }),
     seller: item.seller_long || item.seller || null,
     runAndDrive: /run\s*(\/|and)\s*drive/i.test(startCode) ? "Run and Drive" : startCode || null,
     titleType: item.sale_document_split || item.sale_document_external || null,

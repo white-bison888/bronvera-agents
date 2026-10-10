@@ -7,8 +7,18 @@ const sharp = require("sharp");
 
 const BidCarsProvider = require("./providers/bidcars");
 const { calculateMaxBid } = require("./economics/max-bid");
+const { demandOf } = require("./providers/lot-demand");
+const { tidyTrim, trimFromListing } = require("./providers/lot-trim");
+const { getVinInfo, isVin } = require("./providers/tesla-vin");
+const { createPolandPrices } = require("./market/poland-prices");
+const { buildDeal, createFiller, trimHintOf, vinFactsOf } = require("./economics/destination-deals");
+const { sanitizeFilters } = require("./quick-search/filters");
+const { buildCatalog } = require("./quick-search/catalog");
+const { parseQuery } = require("./quick-search/parse-text");
+const { runQuickSearch } = require("./quick-search/runner");
+const { applyExtraFilters, hasExtraFilters, sellerFromSources } = require("./quick-search/extra-filters");
 const { describeDamage } = require("./providers/damage-labels");
-const { checkSeller } = require("./providers/lot-requirements");
+const { checkSeller, pickSeller } = require("./providers/lot-requirements");
 const { noticeFields } = require("./providers/lot-notices");
 const history = require("./history/store");
 const LotPhotoCollector = require("./providers/lot-photos");
@@ -63,6 +73,18 @@ const bidCars = new BidCarsProvider();
 const photoCollector = new LotPhotoCollector();
 const photoAssessor = new PhotoAssessor();
 const marketPrices = new MinskMarketPrices();
+// Польша (07.10): цены otomoto.pl, оценка лота для этого рынка собирается при запросе истории.
+const plMarketPrices = createPolandPrices();
+const fillBelarusPrices = createFiller({
+  prices: marketPrices,
+  getVinInfo: vin => getVinInfo().peek(vin),
+  log: message => console.error(message),
+});
+const fillPolandPrices = createFiller({
+  prices: plMarketPrices,
+  getVinInfo: vin => getVinInfo().peek(vin),
+  log: message => console.error(message),
+});
 
 const photoWorker = new PhotoWorker({
   bidCars,
@@ -365,7 +387,26 @@ app.post("/api/cars/search", async (req, res) => {
   }
 });
 
-app.post("/api/economics/max-bid", (req, res) => {
+/*
+ * Пересчёт всех открытых лотов после смены ставок (логистика по портам, 07.10):
+ * новая оценка пишется в историю с теми же ценой, фото и продавцом.
+ */
+app.post("/api/economics/recalculate-open", (req, res) => {
+  try {
+    const recalculated = recalculateOpenLots({
+      model: null,
+      bidCars,
+      photoAssessor,
+      reason: String(req.body?.reason || "rates-changed"),
+    });
+
+    res.json({ success: true, recalculated: recalculated.length });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.post("/api/economics/max-bid", async (req, res) => {
   try {
     const body = req.body || {};
 
@@ -392,6 +433,9 @@ app.post("/api/economics/max-bid", (req, res) => {
         notices.set(String(entry.lotNumber), noticeFields(entry.lotDetails));
     }
 
+    // Топливо и объём двигателя из VIN нужны расчёту ввоза: бензин и дизель в Беларуси считаются по объёму.
+    await getVinInfo().ensure(vehicles.map(vehicle => vehicle.vin || bidCars.findByLotNumber(vehicle.lotNumber)?.vin));
+
     const results = vehicles.map((vehicle) => {
       const listing = bidCars.findByLotNumber(vehicle.lotNumber);
 
@@ -407,11 +451,12 @@ app.post("/api/economics/max-bid", (req, res) => {
        * терялся при пересчёте). Берём первого известного.
        */
       const candidates = [vehicle.seller, listing?.seller, sellers.get(String(vehicle.lotNumber))];
-      const seller = candidates.find(value => checkSeller(value).known) || candidates.find(Boolean);
+      const seller = pickSeller(candidates);
 
       return calculateMaxBid(
         {
           ...(listing || {}),
+          ...vinFactsOf(getVinInfo().peek(vehicle.vin || listing?.vin)),
           ...vehicle,
           ...(notices.get(String(vehicle.lotNumber)) || {}),
           ...(seller ? { seller } : {}),
@@ -455,6 +500,7 @@ app.post("/api/economics/max-bid", (req, res) => {
               model: vehicle.model ?? listing.model,
               year: vehicle.year ?? listing.year,
               mileage: vehicle.mileage ?? listing.mileage,
+              vin: vehicle.vin ?? listing.vin,
             })),
             repairCostUsd: result.breakdown?.repairCostUsd ?? null,
             repairCostSource: result.repairCostSource || null,
@@ -564,6 +610,9 @@ app.post("/api/market/prices", async (req, res) => {
         model: pick("model"),
         year: pick("year"),
         mileage: pick("mileage"),
+        vin: pick("vin"),
+        // Комплектация из VIN («TRX»): аналоги берём с ней, а не по всей модели.
+        trimHint: trimHintOf(getVinInfo().peek(pick("vin"))),
       });
 
       console.log(
@@ -690,7 +739,29 @@ app.post("/api/photos/assess", async (req, res) => {
  * и сколько времени займёт добрать остальные. Нужно, чтобы решение
  * о сборе принималось осознанно, а не вслепую.
  */
+/*
+ * План сбора фото. Раньше на каждую из ~1 800 машин заново читался и разбирался файл оценок
+ * (1,7 МБ) и по три раза читалась папка с кадрами: 17–34 секунды работы, пока весь сервер
+ * стоял, а сайт при каждой загрузке страницы получал 502. Теперь файл оценок читается один
+ * раз, кадры лота считаются один раз, а готовый ответ живёт минуту.
+ */
+const PLAN_TTL_MS = 60000;
+let planMemo = null;
+
 const planPhotos = (filters = {}) => {
+  const memoKey = JSON.stringify(filters);
+
+  if (planMemo && planMemo.key === memoKey && Date.now() - planMemo.at < PLAN_TTL_MS)
+    return planMemo.value;
+
+  const value = computePhotoPlan(filters);
+
+  planMemo = { key: memoKey, at: Date.now(), value };
+
+  return value;
+};
+
+const computePhotoPlan = (filters = {}) => {
   const cache = bidCars.loadCache();
   const seen = new Set();
 
@@ -739,13 +810,27 @@ const planPhotos = (filters = {}) => {
     }
   }
 
-  const withPhotos = matching.filter(
-    vehicle => photoCollector.readPhotoDir(vehicle.lotNumber).length > 0
-  );
+  const photoCounts = new Map();
+  const photoCountOf = (vehicle) => {
+    const key = String(vehicle.lotNumber);
 
-  const missing = matching.filter(
-    vehicle => photoCollector.readPhotoDir(vehicle.lotNumber).length === 0
-  );
+    if (!photoCounts.has(key))
+      photoCounts.set(key, photoCollector.readPhotoDir(key).length);
+
+    return photoCounts.get(key);
+  };
+
+  // Оценки фото — один раз на весь план, а не по разбору файла на каждую машину.
+  const assessments = photoAssessor.loadCache();
+  const assessmentOf = (lotNumber) => {
+    const entry = assessments[String(lotNumber)];
+
+    return entry?.version === photoAssessor.cacheVersion ? entry.assessment : null;
+  };
+
+  const withPhotos = matching.filter(vehicle => photoCountOf(vehicle) > 0);
+
+  const missing = matching.filter(vehicle => photoCountOf(vehicle) === 0);
 
   // Сбор идёт по одному лоту раз в четыре минуты — иначе аукцион
   // начинает отбивать запросы.
@@ -758,7 +843,7 @@ const planPhotos = (filters = {}) => {
    */
   const vehicles = matching
     .map((vehicle) => {
-      const assessment = photoAssessor.getCached(vehicle.lotNumber);
+      const assessment = assessmentOf(vehicle.lotNumber);
 
       return {
         lotNumber: vehicle.lotNumber,
@@ -767,6 +852,8 @@ const planPhotos = (filters = {}) => {
         model: vehicle.model ?? null,
         mileage: vehicle.mileage ?? null,
         currentBid: vehicle.currentBid ?? null,
+        saleType: vehicle.saleType || "auction",
+        buyNowUsd: vehicle.buyNowUsd ?? null,
         primaryDamage: describeDamage(
           vehicle.primaryDamage,
           vehicle.secondaryDamage
@@ -775,7 +862,7 @@ const planPhotos = (filters = {}) => {
         auctionEstimateMin: vehicle.auctionEstimateMin ?? null,
         auctionEstimateMax: vehicle.auctionEstimateMax ?? null,
         url: vehicle.url ?? null,
-        photoCount: photoCollector.readPhotoDir(vehicle.lotNumber).length,
+        photoCount: photoCountOf(vehicle),
         severity: assessment?.available ? assessment.severity : null,
         repairCostMin: assessment?.repairCostMin ?? null,
         repairCostMax: assessment?.repairCostMax ?? null,
@@ -973,6 +1060,64 @@ app.get("/api/history", (req, res) => {
    * ставка растёт до закрытия, дату мы научились разбирать позже.
    * Поэтому берём их из реестра, а не из момента анализа.
    */
+  // Комплектация по VIN (07.10): из кэша без сети; недостающее догружаем в фоне — к следующему опросу сайта оно будет.
+  const vinInfo = getVinInfo();
+  const missingVins = filtered
+    .filter(entry => isVin(entry.vin) && !vinInfo.peek(entry.vin))
+    .map(entry => entry.vin);
+
+  if (missingVins.length)
+    vinInfo.ensure(missingVins).catch(error => console.error("Расшифровка VIN:", error.message));
+
+  /*
+   * Другие рынки назначения (07.10): та же машина, ставки и цены другой страны.
+   * Считаем для лотов с торгами впереди и тех, что закрылись в последние трое суток;
+   * цены берём из кэша, недостающие подгружаем в фоне — к следующему опросу сайта они будут.
+   */
+  const dealsSince = Date.now() - 3 * 24 * 3600000;
+  const dealsByLot = new Map();
+  const toFill = [];
+  const toFillBy = [];
+
+  for (const entry of filtered) {
+    const lot = String(entry.lotNumber);
+    const listing = bidCarsByLotNumber.get(lot) || {};
+    const when = Date.parse(listing.saleDate || entry.saleDate || "");
+
+    if (!(when >= dealsSince))
+      continue;
+
+    const info = vinInfo.peek(entry.vin);
+    const deal = buildDeal({
+      destination: "PL",
+      entry,
+      listing,
+      vinInfo: info,
+      prices: plMarketPrices,
+    });
+    const deals = { PL: deal };
+
+    /*
+     * Бензин и дизель в Беларусь — как физлицо, по объёму двигателя (07.10): записи прогноза
+     * считают Беларусь по льготам электромобилей, поэтому для таких лотов оценку собираем здесь.
+     */
+    if (info?.ok && ["gasoline", "diesel"].includes(info.fuel)) {
+      deals.BY = buildDeal({ destination: "BY", entry, listing, vinInfo: info, prices: marketPrices });
+
+      if (deals.BY.status === "pending" && when > Date.now() && !toFillBy.some(item => String(item.entry.lotNumber) === lot))
+        toFillBy.push({ entry, listing });
+    }
+
+    // По записи лота (последней) — те же значения, что видит сайт.
+    dealsByLot.set(`${lot}#${entry.createdAt}`, deals);
+
+    if (deal.status === "pending" && when > Date.now() && !toFill.some(item => String(item.entry.lotNumber) === lot))
+      toFill.push({ entry, listing });
+  }
+
+  fillPolandPrices(toFill);
+  fillBelarusPrices(toFillBy);
+
   const enriched = filtered.map((entry) => {
     const listing = bidCarsByLotNumber.get(String(entry.lotNumber)) || {};
 
@@ -980,6 +1125,19 @@ app.get("/api/history", (req, res) => {
       ...entry,
       saleDate: listing.saleDate || entry.saleDate || null,
       currentBidUsd: listing.currentBid ?? null,
+      // Fast Buy (07.10): цена выкупа, момент закрытия окна и тип продажи — из реестра лотов.
+      saleType: listing.saleType || "auction",
+      // Продавец (09.10): страховая / не публикуется / не прочитан — для значка на сайте.
+      sellerKind: checkSeller(pickSeller([listing.seller, entry.lotDetails?.seller])).kind,
+      buyNowUsd: listing.buyNowUsd ?? null,
+      buyNowCloseAt: listing.buyNowCloseAt || null,
+      // Спрос (07.10): просмотры лота и скорость их роста — из истории замеров наблюдателя.
+      demand: demandOf(listing.viewsHistory),
+      vinInfo: vinInfo.peek(entry.vin),
+      // Оценка для других рынков: Польша, и Беларусь для бензина и дизеля.
+      deals: dealsByLot.get(`${entry.lotNumber}#${entry.createdAt}`) || null,
+      // Комплектация по тексту bid.cars: со страницы лота, иначе из выдачи, если она не обрезана.
+      trimText: tidyTrim(entry.lotDetails?.trim) || trimFromListing(listing.trim),
       bidCheckedAt: listing.bidCheckedAt || null,
       auctionEstimateMin: listing.auctionEstimateMin ?? null,
       auctionEstimateMax: listing.auctionEstimateMax ?? null,
@@ -1298,6 +1456,133 @@ app.post("/api/history/actual", (req, res) => {
  * ручной запуск. Скан идёт минут пятнадцать с паузами, поэтому запуск
  * отвечает сразу, а результат читается отсюда же.
  */
+/*
+ * БЫСТРЫЙ ПОИСК БЕЗ ИИ (прототип, 07.10.2026). Форма на сайте даёт готовые параметры,
+ * поиск идёт тем же путём, что утренний отбор: bid.cars → VIN → цены → формула → история.
+ * Идёт фоновой задачей: поиск по bid.cars занимает до минуты и дольше таймаута запроса сайта,
+ * а сайт опрашивает состояние задачи. За раз — один поиск: каждый ходит на bid.cars через прокси.
+ */
+const quickJobs = new Map();
+const QUICK_TTL_MS = 60 * 60 * 1000;
+let quickCatalog = null;
+
+const catalogNow = () => {
+  if (quickCatalog && Date.now() - quickCatalog.at < 5 * 60 * 1000)
+    return quickCatalog.value;
+
+  const vehicles = Object.values(bidCars.loadCache().buckets || {}).flatMap(bucket => bucket.vehicles || []);
+  const value = buildCatalog(vehicles);
+
+  quickCatalog = { at: Date.now(), value };
+
+  return value;
+};
+
+const quickDeps = () => ({
+  searchCars: options => bidCars.searchCars(options),
+  vinInfo: getVinInfo(),
+  marketPrices,
+  photoAssessor,
+  history,
+  photoQueue,
+});
+
+app.get("/api/quick-search/catalog", (req, res) => {
+  res.json({ success: true, ...catalogNow() });
+});
+
+app.post("/api/quick-search/parse", (req, res) => {
+  res.json({ success: true, ...parseQuery(req.body?.text, catalogNow()) });
+});
+
+// Сколько подходящих лотов уже есть в реестре — мгновенно, без обращения к bid.cars.
+app.get("/api/quick-search/count", (req, res) => {
+  const make = String(req.query.make || "").trim();
+
+  if (!make)
+    return res.json({ success: true, count: 0 });
+
+  const csv = value => String(value || "").split(",").map(item => item.trim()).filter(Boolean);
+  const matches = bidCars.localMatches({
+    make,
+    models: csv(req.query.models),
+    trims: csv(req.query.trims),
+    yearFrom: req.query.yearFrom || null,
+    yearTo: req.query.yearTo || null,
+  });
+
+  /*
+   * Те же дополнительные фильтры, что у поиска (09.10): продавец — из реестра и записей истории.
+   */
+  const extraFilters = {
+    sellerMode: req.query.sellerMode || null,
+    damageMode: req.query.damageMode || null,
+    saleType: req.query.saleType || null,
+    saleWindowDays: Number(req.query.saleWindowDays) || null,
+  };
+
+  if (!hasExtraFilters(extraFilters))
+    return res.json({ success: true, count: matches.length });
+
+  const historySellers = new Map();
+
+  for (const entry of history.readAll()) {
+    if (entry.lotDetails?.seller)
+      historySellers.set(String(entry.lotNumber), entry.lotDetails.seller);
+  }
+
+  const { lots: kept } = applyExtraFilters(matches, extraFilters, {
+    sellerOf: lot => sellerFromSources(lot, historySellers.get(String(lot.lotNumber))),
+  });
+
+  res.json({ success: true, count: kept.length });
+});
+
+app.post("/api/quick-search", (req, res) => {
+  const checked = sanitizeFilters(req.body?.filters || req.body);
+
+  if (!checked.ok)
+    return res.status(400).json({ success: false, errors: checked.errors });
+
+  const running = [...quickJobs.values()].find(job => job.status === "running");
+
+  if (running)
+    return res.status(429).json({ success: false, error: "Сейчас идёт другой быстрый поиск — подождите, пока закончится.", jobId: running.id });
+
+  for (const [id, job] of quickJobs) {
+    if (Date.now() - job.startedAt > QUICK_TTL_MS)
+      quickJobs.delete(id);
+  }
+
+  const id = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+  const job = { id, status: "running", step: "search", detail: "Запускаю поиск", startedAt: Date.now(), filters: checked.filters, result: null, error: null };
+
+  quickJobs.set(id, job);
+
+  costLedger.withRun(`quick-${id}`, () => runQuickSearch({
+    filters: checked.filters,
+    deps: quickDeps(),
+    jobId: id,
+    report: (step, detail) => Object.assign(job, { step, detail }),
+  })).then((result) => {
+    Object.assign(job, { status: "done", step: "done", detail: "Готово", result, finishedAt: Date.now() });
+  }).catch((error) => {
+    console.error("Быстрый поиск:", error);
+    Object.assign(job, { status: "failed", error: error.message, finishedAt: Date.now() });
+  });
+
+  res.status(202).json({ success: true, jobId: id });
+});
+
+app.get("/api/quick-search/jobs/:id", (req, res) => {
+  const job = quickJobs.get(String(req.params.id));
+
+  if (!job)
+    return res.status(404).json({ success: false, error: "Задача не найдена — возможно, прошёл час." });
+
+  res.json({ success: true, job });
+});
+
 app.get("/api/screener/today", (req, res) => {
   const state = screener.latestDay();
 
