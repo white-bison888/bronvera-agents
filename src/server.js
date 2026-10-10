@@ -34,6 +34,7 @@ const GoodingScraper = require("./rare/gooding-scraper");
 const CollectingCarsScraper = require("./rare/collectingcars-scraper");
 const RareAlerts = require("./rare/alerts");
 const { SoldIndex } = require("./rare/sold-index");
+const { publicLot, publicLots } = require("./rare/public-view");
 const { buildRareCostSummary } = require("./rare/cost-report");
 const costLedger = require("./costs/ledger");
 const { createDifyUsage, UUID } = require("./costs/dify-usage");
@@ -1031,7 +1032,7 @@ app.get("/api/rare/lots", (req, res) => {
   const lots = reads.flatMap(r => r.lots);
   const updatedAt = reads.map(r => r.updatedAt).filter(Boolean).sort().pop() || null;
 
-  res.json({ success: true, updatedAt, count: lots.length, lots });
+  res.json({ success: true, updatedAt, count: lots.length, lots: publicLots(lots) });
 });
 
 /*
@@ -1062,14 +1063,14 @@ app.get("/api/rare/sold", (req, res) => {
   // Одна запись по id — для страницы проданного лота: она может быть старше окна, которое видит список.
   if (req.query.id) {
     const lot = soldIndex.lot(String(req.query.id));
-    return res.json({ success: true, count: lot ? 1 : 0, total: soldIndex.total(), lots: lot ? [lot] : [] });
+    return res.json({ success: true, count: lot ? 1 : 0, total: soldIndex.total(), lots: lot ? [publicLot(lot)] : [] });
   }
 
   const since = req.query.all === "1" ? null : (dateParam(req.query.since) ?? Date.now() - SOLD_DEFAULT_WINDOW_MS);
   const lots = soldIndex.points({ since, until: dateParam(req.query.until) });
   const full = soldIndex.lotsByIds(lots.rows.map(row => row[0]));
 
-  res.json({ success: true, count: full.length, total: soldIndex.total(), lots: full });
+  res.json({ success: true, count: full.length, total: soldIndex.total(), lots: publicLots(full) });
 });
 
 /*
@@ -1089,20 +1090,20 @@ app.get("/api/rare/sold/comps", (req, res) => {
   const comps = soldIndex.comparables(String(req.query.id || ""));
   if (!comps)
     return res.status(404).json({ success: false, message: "лот не найден" });
-  res.json({ success: true, ...comps });
+  res.json({ success: true, ...comps, lots: publicLots(comps.lots) });
 });
 
 /* Перепродажи: все продажи той же машины (по VIN / номеру шасси) для страницы лота. */
 app.get("/api/rare/sold/history", (req, res) => {
   const id = String(req.query.id || "");
-  res.json({ success: true, lots: soldIndex.history(id), identity: soldIndex.identity(id) });
+  res.json({ success: true, lots: publicLots(soldIndex.history(id)), identity: soldIndex.identity(id) });
 });
 
 const SOLD_LOTS_MAX_IDS = 500;
 
 app.post("/api/rare/sold/lots", (req, res) => {
   const ids = Array.isArray(req.body?.ids) ? req.body.ids.filter(id => typeof id === "string").slice(0, SOLD_LOTS_MAX_IDS) : [];
-  res.json({ success: true, lots: soldIndex.lotsByIds(ids) });
+  res.json({ success: true, lots: publicLots(soldIndex.lotsByIds(ids)) });
 });
 
 /*
