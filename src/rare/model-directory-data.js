@@ -114,7 +114,6 @@ const DIRECTORY = [
       { name: "190E", match: /\b190 ?e\b|\b190 2\.[35]-?16\b|\bw201\b/ },
       { name: "S-Class", match: /\bs ?(class|\d{3})\b|\b(280|300|350|380|420|450|500|560|600) ?s[el]{0,2}c?\b|\bw(108|109|116|126|140|220|221|222)\b/, gens: [G("W108/W109", 1965, 1972, /\bw10[89]\b/), G("W116", 1972, 1980, /\bw116\b/), G("W126", 1980, 1991, /\bw126\b/), G("W140", 1991, 1998, /\bw140\b/), G("W220", 1999, 2005, /\bw220\b/), G("W221", 2006, 2013, /\bw221\b/), G("W222", 2014, 2020, /\bw222\b/)] },
       { name: "E-Class", match: /\be ?(class|\d{2,3})\b|\b(220|230|260|280|300|320|400|420|500)e\b|\bw(124|210|211|212|213)\b|\be-?(55|63)\b/, gens: [G("W124", 1985, 1995, /\bw124\b/), G("W210", 1996, 2002, /\bw210\b/), G("W211", 2003, 2009, /\bw211\b/), G("W212", 2010, 2016, /\bw212\b/), G("W213", 2017, 2035, /\bw213\b/)] },
-      { name: "Sprinter", match: /sprinter/ },
       { name: "SLR McLaren", match: /\bslr\b/ }, { name: "AMG GT", match: /amg gt/ },
       { name: "C-Class", match: /\bc ?(class|\d{2,3})\b|\bc-?(55|63)\b|\bw20[34]\b|\bw205\b/ },
       { name: "Diesel sedans (240D / 300D / 300TD)", match: /\b(240|300|220) ?(d|td)\b/ },
@@ -126,7 +125,7 @@ const DIRECTORY = [
     make: "Mercedes-AMG",
     families: [
       { name: "SLS AMG", match: /\bsls\b/ },
-      { name: "AMG GT", match: /\bgt\b/ },
+      { name: "GT", match: /\bgt\b/ },
       { name: "SL", match: /\bsl\b|sl ?(55|63|65)/ },
     ],
   },
